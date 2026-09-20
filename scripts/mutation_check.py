@@ -945,15 +945,26 @@ def prepare_sandbox(work_dir: Path, pkgs: set[str]) -> None:
     # ⚠️ ``docs/`` 也要复制（它只有几 MB）。
     #   理由：**sandbox 里缺 docs/ 会让基线变红**，而基线一红，
     #   每个变异体都会"变红"——整份变异验证就变成假证据。
-    #   本项目为此栽过两次（一次是产物依赖、一次是编号账本依赖），
-    #   两次的修法都是"给测试加 skip"；这次改成**从根上补上 docs/**，
+    #   本项目为此栽过三次（产物依赖 / 编号账本依赖 / M 线观测值依赖），
+    #   前两次的修法都是"给测试加 skip"；这次改成**从根上补上目录**，
     #   让那些测试能真正跑（而不是被跳过）——跳过等于没测。
-    #   ``out/``（约 500MB）仍不复制：那里的产物可以由脚本重建，
-    #   依赖它的测试继续用显式 skip。
     for sub in sorted(pkgs) + ["data", "docs"]:
         src_dir = ROOT / sub
         if src_dir.is_dir():
             shutil.copytree(src_dir, work_dir / sub, dirs_exist_ok=True)
+    # ⚠️ ``out/`` 整体约 500MB（含变异沙箱自身、快照、日志），不能复制；
+    #   但**顶层的 *.json 产物**（各阶段 metrics、workstream_*、诊断结果，
+    #   合计十几 MB）必须复制——很多测试要读它们，缺了就是基线红。
+    #   子目录（_mutation/ 、_archive/、figs/、repro_logs/）仍然不复制。
+    out_src = ROOT / "out"
+    if out_src.is_dir():
+        out_dst = work_dir / "out"
+        out_dst.mkdir(parents=True, exist_ok=True)
+        for j in sorted(out_src.glob("*.json")):
+            try:
+                shutil.copy2(j, out_dst / j.name)
+            except OSError:
+                pass
 
 
 def check_anchors() -> list[str]:

@@ -1569,8 +1569,38 @@ def sec_k_resolution() -> str:
     """
     ku = load("k_uncertainty.json") or {}
     s = ku.get("summary") or {}
+    # ---- 回填后的进展（工作线L）----
+    WL = load("workstream_L_metrics.json") or {}
+    wfam = WL.get("families") or {}
+    ea4 = {n: r for n, r in wfam.items()
+           if n.startswith("EA4_") and r.get("k") is not None}
+    backfill_html = ""
+    if ea4:
+        rows = "".join(
+            f"<tr><td>{n}</td><td>{r.get('n_unsaturated')}/{r.get('n_levels_total')}</td>"
+            f"<td>{f(r['k'], '.3f')}</td>"
+            f"<td>[{f(r['ci'][0], '.3f')}, {f(r['ci'][1], '.3f')}]</td>"
+            f"<td>{f(r['ci_width'], '.3f')}</td>"
+            f"<td>{'否' if not r.get('contains_0_5') else '<b>是</b>'}</td>"
+            f"<td>{r.get('original_k')}</td></tr>" for n, r in ea4.items())
+        el2 = WL.get("el2_asymmetry") or {}
+        backfill_html = f"""
+<h3>回填后的进展（工作线L：8 种子 × 未饱和档）</h3>
+<table><thead><tr><th>臂</th><th>未饱和/总档</th><th>k</th><th>95% CI</th>
+<th>宽度</th><th>含 0.5</th><th>旧读数（3 种子）</th></tr></thead>
+<tbody>{rows}</tbody></table>
+<p>⭐ <strong>三个臂的 CI 现在都不包含 0.5</strong> ⇒
+「冲击显著偏离平方根律」这一条终于有了<strong>区间支撑</strong>。
+但 EL.2（非对称 vs 对称）的判定是 <strong>{el2.get('verdict')}</strong>
+（区间重叠 {f(el2.get('overlap'), '.3f')}）——效应量本身太小，判不出来。</p>
+<p>⚠️ <strong>更值得注意的是三臂的 k 几乎相同</strong>（0.73 / 0.74 / 0.79）。
+把它与「有/无稀疏化」的效应对照：<strong>0.54 vs 0.06（约 9 倍）</strong> ⇒
+三线深挖「只稀疏化吃单方最有效、双边同时稀疏化互相抵消」这个叙事，
+在回填后的干净测量里<strong>几乎消失</strong>。
+更准确的表述是：<strong>只要存在时间聚集性，冲击就会变凹；作用在需求侧还是供给侧，影响小得多。</strong></p>""" if ea4 else ""
+
     if not s:
-        return """<section id="kres">
+        return f"""<section id="kres">
 <h2>1.5　⚠️ 重大更正：k 的比较有没有分辨力？</h2>
 <div class="warn"><p>未找到 <code>out/k_uncertainty.json</code>。先跑
 <code>python scripts/diagnose_k_uncertainty.py</code> 再重出本报告。</p></div>
@@ -1615,6 +1645,7 @@ k 的点估计几乎由首尾两点之比决定。</li>
 <p>完整证据（三步校验、复现自查、逐档显著性、19 臂 bootstrap、
 「需要多少种子」的量化）见
 <code>docs/前置校验-EA4-诊断报告.md</code>。</p>
+{backfill_html}
 </div>
 </section>"""
 

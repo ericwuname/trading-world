@@ -155,6 +155,81 @@ def _priority_of(kind: str, matched: str) -> int:
     return 3
 
 
+def _backfill_rows() -> list[str]:
+    """§3.4：工作线L **已回填标准配置**的家族（从 JSON 现读，不手抄）。
+
+    回填 = 把「3 种子 × 3~4 档」的旧读数，用「8 种子 × 未饱和档」重跑，
+    于是这些条目从"疑似裸奔"升级为"有 CI 支撑"。
+    """
+    L = _load_json("workstream_L_metrics.json")
+    fams = L.get("families") or {}
+    if not fams:
+        return ["", "（缺 `out/workstream_L_metrics.json`——"
+                    "先跑 `python scripts/run_workstream_L.py`）", ""]
+    out = ["", f"已回填 **{len(fams)}** 个家族"
+           f"（每个都用同配置同窗口标定 λ̄、8 种子、未饱和档位）：", ""]
+    out.append("| 家族 | 未饱和/总档 | k | 95% CI | 宽度 | 含0.5 | "
+               "旧读数(3种子) | 状态 |")
+    out.append("|---|---|---|---|---|---|---|---|")
+    for name, r in fams.items():
+        if r.get("k") is None:
+            out.append(f"| `{name}` | {r.get('n_unsaturated')}/"
+                       f"{r.get('n_levels_total')} | — | — | — | — | "
+                       f"{r.get('original_k')} | ⚠️ 拟合未成功 |")
+            continue
+        lo, hi = r["ci"]
+        out.append(f"| `{name}` | {r.get('n_unsaturated')}/"
+                   f"{r.get('n_levels_total')} | {r['k']:.3f} | "
+                   f"[{lo:.3f}, {hi:.3f}] | {r['ci_width']:.3f} | "
+                   f"{'Y' if r.get('contains_0_5') else 'n'} | "
+                   f"{r.get('original_k')} | ✅ 已回填标准配置 |")
+    el2 = L.get("el2_asymmetry") or {}
+    if el2.get("verdict"):
+        out += ["", f"**EL.2 判定（非对称 vs 对称）：{el2['verdict']}**"
+                    f"（两区间重叠 {el2.get('overlap')}）", ""]
+    return out
+
+
+def _h4_status_rows() -> list[str]:
+    """§3.5：H4 的状态（按工作线M 的最终分支）。"""
+    M = _load_json("workstream_M_metrics.json")
+    if not M:
+        return ["", "（缺 `out/workstream_M_metrics.json`——"
+                    "先跑 `python scripts/run_workstream_M.py`）", ""]
+    em2 = M.get("em2") or {}
+    em4 = M.get("em4") or {}
+    em3 = M.get("em3") or {}
+    out = [""]
+    if em4:
+        out += [f"H4 象限检验：**{em4.get('branch')}** —— 不加种子凑显著。",
+                "",
+                f"- 宏观形式**成立**：吃单方突发期深度 "
+                f"{(em4.get('macro_effect') or {}).get('taker_only_mean', float('nan')):.2f}"
+                f"（背景期 {(em4.get('macro_effect') or {}).get('background_mean', float('nan')):.2f}，"
+                f"相对变化 {(em4.get('macro_effect') or {}).get('relative_change_pct') or 0:+.1f}%）",
+                f"- 象限内精确显著性**在合理预算内做不实**：需要约 "
+                f"**{em2.get('seeds_needed', float('nan')):.0f} 个种子**"
+                f"（现用 3 个）——与阶段3 判定 k 需要 300 种子是同一类问题",
+                f"- 判定阈值（事先定死）：≤{em2.get('thresholds', {}).get('worth_it_max_seeds')} 值得 / "
+                f">= {em2.get('thresholds', {}).get('not_worth_min_seeds')} 不值得",
+                "", "**这不是失败**：功效分析的价值就是提前算清「值不值得投入」——"
+                "算出来不值得，那么不投入本身就是产出。"]
+    elif em3:
+        p = em3.get("cross_run_p")
+        out += [f"H4 象限检验：**已加码到 {em3.get('n_seeds')} 个种子**重跑。",
+                "",
+                f"- 跨运行检验：均值差 {em3.get('cross_run_mean_diff', float('nan')):+.2f}"
+                f" ± {em3.get('cross_run_sem', float('nan')):.2f}"
+                f"，p = {p:.4f}（{'显著' if (p is not None and p < 0.05) else '不显著'}）"
+                if p is not None else "- （跨运行检验数据不足）",
+                f"- H4 方向：{'支持' if em3.get('h4_direction') else '不支持'}"]
+    else:
+        out += ["H4：功效分析已完成但尚未执行加码（`--skip-em3`）。",
+                f"- 需要约 **{em2.get('seeds_needed', float('nan')):.0f} 个种子**，"
+                f"判定 **{em2.get('verdict')}**"]
+    return out
+
+
 def build_inventory(scanned: dict[str, list[dict]]) -> str:
     """生成 ``docs/历史数值陈述分辨力清单.md``。"""
     all_rows: list[dict] = []
@@ -255,6 +330,15 @@ def build_inventory(scanned: dict[str, list[dict]]) -> str:
     add("| 确定性比值 | λ̄ 标尺偏差 1.767×、0.935× | 两个实测值相除，不是统计估计 |")
     add("| 逐位一致 | 复现自查差 0.000 | 同种子确定性复现 |")
     add("| 事件率 | EA.0 的公式偏差 <1% | 直接测的到达率 |")
+    add("")
+    add("### 3.4 已回填标准配置（工作线L）")
+    add("")
+    for ln in _backfill_rows():
+        add(ln)
+    add("")
+    add("### 3.5 H4 象限检验的状态（工作线M）")
+    for ln in _h4_status_rows():
+        add(ln)
     add("")
     add("## 4. 结尾：这份清单要来干什么")
     add("")
