@@ -986,9 +986,218 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
         [
             (
                 'tw/synthetic.py',
-                '        hi = max(hi, p0, p1) * (1.0 + abs(rng.normal(0.0, 2e-4)))\n'
-                '        lo = min(lo, p0, p1) * (1.0 - abs(rng.normal(0.0, 2e-4)))',
-                '        hi = max(p0, p1)\n        lo = min(p0, p1)',
+                '        hi = max(hi, p0, p1) * (1.0 + abs(rng.normal(0.0, 2e-4)))\n',
+                '        hi = max(p0, p1)\n',
+            ),
+        ],
+    ),
+    # ==================================================================
+    # A1：OKX 风格订单模型 + 保证金账户（2026-09-20 第八轮）
+    # ==================================================================
+    (
+        'M64',
+        '止盈止损触发方向不再按开仓方向取反（空头 tp 也写成 >=）'
+        '——空头的止盈会在价格**上涨**时触发，等于把止盈做成了止损；'
+        '而成品系统里这种单会立即成交，比没有止盈止损更糟',
+        [
+            (
+                'tw/order_model.py',
+                '            if self.tp_trigger_px is not None:\n'
+                '                p = pick(self.tp_trigger_px_type)\n'
+                '                if p <= self.tp_trigger_px:\n'
+                '                    return "tp"\n',
+                '            if self.tp_trigger_px is not None:\n'
+                '                p = pick(self.tp_trigger_px_type)\n'
+                '                if p >= self.tp_trigger_px:\n'
+                '                    return "tp"\n',
+            ),
+        ],
+    ),
+    (
+        'M65',
+        '市价单不再用 ±inf 而带上一个有限价格（1e18）'
+        '——撮合层无法把它识别成"吃穿全盘"，市价单退化成"挂在很远处的限价单"，'
+        '本应立即成交的单永远不成交（静默失效，报错都没有）',
+        [
+            (
+                'tw/order_model.py',
+                '            px = math.inf if self.side == "buy" else -math.inf\n',
+                '            px = 1e18 if self.side == "buy" else -1e18\n',
+            ),
+        ],
+    ),
+    (
+        'M66',
+        'post_only 交叉检查反向（买用 <= 而不是 >=）'
+        '——post_only 的安全阀失效：本该被拒的"一定会吃单"的挂单被放行，'
+        '名义上的 maker 单实际付了 taker 费率（费差 2.5 倍），'
+        '而且它仍然以 post_only 记账，策略开发者完全看不出来',
+        [
+            (
+                'tw/order_model.py',
+                '            if best_ask is not None and req.px is not None and req.px >= best_ask:\n'
+                '                raise _reject("TW-1001")\n',
+                '            if best_ask is not None and req.px is not None and req.px <= best_ask:\n'
+                '                raise _reject("TW-1001")\n',
+            ),
+        ],
+    ),
+    (
+        'M67',
+        'reduce_only 的超量**不再裁剪**而是原样放行'
+        '——平仓单能平出反向仓位，「只减仓」的语义被废掉；'
+        '而留痕里看不出量被放大了（Agent 说平 100 手，实际平了 300 手并反向持仓）',
+        [
+            (
+                'tw/order_model.py',
+                '    if req.sz > abs(position_qty) + EPS:\n'
+                '        return req.with_size(abs(position_qty))\n',
+                '    if False:\n'
+                '        return req.with_size(abs(position_qty))\n',
+            ),
+        ],
+    ),
+    (
+        'M68',
+        '强平价公式里多空用了同一个分母（1 - m）'
+        '——空头强平价被算低，账户在真正该被强平时看起来还安全；'
+        '这是最典型的「抄错一行公式」型缺陷',
+        [
+            (
+                'tw/account.py',
+                '        return (self.avg_px * q + c) / (q * (1.0 + m))\n',
+                '        return (self.avg_px * q + c) / (q * (1.0 - m))\n',
+            ),
+        ],
+    ),
+    (
+        'M69',
+        '权益估值时缺标记价的仓位按 0 计而不是按开仓均价计'
+        '——缺一个标记价就把整仓价值算成 0，账户凭空亏光并触发假强平；'
+        '这类"缺失值当 0"是研究代码里最常见的系统性偏差来源',
+        [
+            (
+                'tw/account.py',
+                '            m = marks.get(p.inst_id)\n'
+                '            if m is None or not (math.isfinite(m) and m > 0):\n'
+                '                m = p.avg_px\n',
+                '            m = marks.get(p.inst_id)\n'
+                '            if m is None or not (math.isfinite(m) and m > 0):\n'
+                '                m = 0.0\n',
+            ),
+        ],
+    ),
+    (
+        'M70',
+        '强平判据用严格小于（equity < mm）而不是 <='
+        '——恰好踩在强平线上的账户不被强平，'
+        '而这个边界恰恰是数值上最常出现的位置',
+        [
+            (
+                'tw/account.py',
+                '        return self.equity(marks) <= self.maintenance_margin(marks)\n',
+                '        return self.equity(marks) < self.maintenance_margin(marks)\n',
+            ),
+        ],
+    ),
+    (
+        'M71',
+        '开仓能力检查把"新仓带来的未实现盈亏"当成 0（upl 强制置 0）'
+        '——只看开仓前已有仓位的盈亏，于是"在亏损仓位上继续加仓"永远查不出问题：'
+        '加仓那一刻模拟权益虚高，等价格再动一点就穿仓。'
+        '这正是 can_open 要用"开仓**后**"模拟权益的原因',
+        [
+            (
+                'tw/account.py',
+                '        upl = (m - avg_after) * q_after if abs(q_after) > EPS else 0.0\n'
+                '        eq_after = self.cash + self.total_upl(marks) - p.upl(m) + upl\n',
+                '        upl = (m - avg_after) * q_after if abs(q_after) > EPS else 0.0\n'
+                '        eq_after = self.cash + self.total_upl(marks) - p.upl(m)\n',
+            ),
+        ],
+    ),
+    # ==================================================================
+    # A2：风控闸门 + 决策留痕（2026-09-20 第八轮）
+    # ==================================================================
+    (
+        'M72',
+        '止盈止损不再校验「偏离 mid 是否过大」'
+        '——直接放行第 6 轮实测到的 100 倍量级错误（tp=10350 vs mid=102.4），'
+        'TP 挂在 100 倍远、SL 永不触发，账户带着裸仓一直跑而留痕显示"已设止盈止损"',
+        [
+            (
+                'tw/risk.py',
+                '        if dev > lim.max_tp_sl_pct:\n'
+                '            d.rule = "tp_sl_off_market"\n',
+                '        if False:\n'
+                '            d.rule = "tp_sl_off_market"\n',
+            ),
+        ],
+    ),
+    (
+        'M73',
+        '止盈止损不再校验方向自洽（tp 在上/sl 在下）'
+        '——"止盈在下方"的单会立即触发，等于下单瞬间以亏损平仓；'
+        '风控放行了一条比不下单更糟的决策',
+        [
+            (
+                'tw/risk.py',
+                '        if should_be == "above" and vf <= mid:\n',
+                '        if False:\n',
+            ),
+        ],
+    ),
+    (
+        'M74',
+        '风控被拒时返回原意图而不是退回 hold'
+        '——证据链第 ⑤ 项断裂：留痕里"风控拒了"与"Agent 本就要这么干"'
+        '无法区分，Agent 的决策质量会被错误地算在风控头上',
+        [
+            (
+                'tw/risk.py',
+                '    if action not in ("buy", "sell"):\n'
+                '        d.rule = "bad_action"\n'
+                '        d.code = "TW-1007"\n'
+                '        d.note(f"action 非法: {action!r}")\n'
+                '        return _hold(f"风控拒绝：action 非法（{action}）"), d\n',
+                '    if action not in ("buy", "sell"):\n'
+                '        d.rule = "bad_action"\n'
+                '        d.code = "TW-1007"\n'
+                '        d.note(f"action 非法: {action!r}")\n'
+                '        return dict(parsed), d\n',
+            ),
+        ],
+    ),
+    (
+        'M75',
+        '裁量步被取消（量超上限直接按原量放行）'
+        '——「风控改了多少量」这个数字消失，'
+        '而它正是量化"风控贡献"的唯一来源：Agent 要 1000 手、实际下 30 手，'
+        '不改量就等于把风控的贡献记成 0',
+        [
+            (
+                'tw/risk.py',
+                '    if notional > cap:\n'
+                '        new_sz = cap / mid\n',
+                '    if False:\n'
+                '        new_sz = cap / mid\n',
+            ),
+        ],
+    ),
+    (
+        'M76',
+        'decision_id 不再包含 prompt_template 版本'
+        '——A/B 换 prompt 的实验里两条决策会算出同一个 ID，'
+        '归因彻底失效；而日志看起来完全正常'
+        '（"看起来对"的静默错误：ID 照样是 32 位十六进制）',
+        [
+            (
+                'tw/decision_log.py',
+                '            str(self.agent_id),\n'
+                '            str(self.prompt_template),\n'
+                '            str(self.model),\n',
+                '            str(self.agent_id),\n'
+                '            str(self.model),\n',
             ),
         ],
     ),

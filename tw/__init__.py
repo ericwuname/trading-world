@@ -16,15 +16,32 @@ realdata.py   真实行情 CSV 载入（复用既有交付包，不重新下载�
 eval.py       **策略评估**：markout、PnL 分解、库存风险、权益回撤
 strategy.py   **策略 API**：写 `on_tick(ctx)` 即可接入实验台
 scenarios.py  **场景库**：平静 / 常态 / 承压 / 清算 / 稀薄，用于稳健性检验
+marketdb.py   数据层：SQLite 三源共用 schema（真实 / 合成 / 回放）
+okx_data.py   拉真实 OHLCV（分页游标减 1ms；失败也记账）
+synthetic.py  离线自测试数据（可复现、OHLC 有影线）
+order_model.py **A1** OKX 风格订单模型：tdMode / posSide / reduceOnly / 附带止盈止损
+account.py     **A1** 保证金账户账本：分档 MMR / 多空强平价 / 穿仓反手
+decision_log.py **A2** 决策留痕：证据链六项 + 确定性 decision_id + JSONL
+risk.py        **A2** 风控闸门：数值 / 方向 / 量 / 保证金；**只有量上限会裁剪**
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
+from .account import MarginAccount, MarginConfig, Position
 from .book import OrderBook
 from .config import Population, SimConfig
+from .decision_log import DecisionLog, DecisionRecord, build_visible_state, log_stats
 from .engine import MatchingEngine
 from .eval import evaluate, format_table, markout, mid_series, pnl_breakdown
 from .market import Market, run_simulation
+from .order_model import (
+    AlgoOrder,
+    OrderRejected,
+    OrderRequest,
+    apply_reduce_only,
+    precheck,
+)
+from .risk import RiskDecision, RiskLimits, check, is_decision_bar
 from .scenarios import SCENARIOS, Scenario, get_scenario, list_scenarios
 from .strategy import Strategy, StrategyContext, make_strategy
 from .types import (
@@ -62,5 +79,23 @@ __all__ = [
     "SCENARIOS",
     "get_scenario",
     "list_scenarios",
+    # A1：订单模型 + 账户
+    "AlgoOrder",
+    "OrderRequest",
+    "OrderRejected",
+    "precheck",
+    "apply_reduce_only",
+    "MarginAccount",
+    "MarginConfig",
+    "Position",
+    # A2：留痕 + 风控
+    "DecisionLog",
+    "DecisionRecord",
+    "build_visible_state",
+    "log_stats",
+    "RiskLimits",
+    "RiskDecision",
+    "check",
+    "is_decision_bar",
     "__version__",
 ]

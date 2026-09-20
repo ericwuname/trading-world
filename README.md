@@ -304,6 +304,108 @@ B 路线（真钱）需要单独一轮设计与评审（独立进程 / 单笔与
 
 ---
 
+## ⭐ LLM 交易 Agent 的地基（A1 订单模型 / A2 留痕与风控）
+
+这一层与「用不用 LLM」无关——**它是任何自动化交易系统都要有的两块地基**。
+`tw/market.py` / `tw/types.py` / `tw/engine.py` **一个字没改**，
+A1/A2 全是新模块，因此它们的全部行为可独立验证（无网络、无 key、无市场也能测穷）。
+
+### A1：OKX 风格订单模型（`tw/order_model.py`）
+
+| 概念 | 本项目的表示 |
+|---|---|
+| `tdMode` | `cash` / `cross` / `isolated`（构造期校验：`cash` 不接受杠杆） |
+| `posSide` | `net` / `long` / `short` |
+| `ordType` | `limit` / `market` / `post_only` / `ioc` / `fok` |
+| `reduceOnly` | 方向同向 **拒**；无仓位 **拒**；超量 **裁剪** |
+| `attachAlgoOrds` | `AlgoOrder`，默认 `triggerPxType="mark"`（**防插针**） |
+
+**拒单码用 `TW-` 前缀**（`TW-1001`~`TW-1010`），**不复用真实 OKX 的数字码**
+——否则"本项目拒的"和"交易所拒的"在日志里无法区分。
+
+⚠️ **触发方向必须按开仓方向取反**：多头 tp 用 `>=`、sl 用 `<=`；
+空头**相反**。写成一个方向会让空头的止盈在价格**上涨**时触发
+= 把止盈做成**立即触发的止损**，比不设更糟。已开 M64 变异体守住。
+
+### A1：保证金账户账本（`tw/account.py`）
+
+- **分档 MMR**（4 档递增）、**maker/taker 分开计费**（费差 2.5 倍，
+  这就是 `post_only` 的价值来源）
+- `Position.apply_fill` 覆盖四种情形：空仓开仓 / 同向加权 /
+  反向部分平 / **穿仓反手**（最易漏的一种）
+- **强平价分母多空不同**：多头 `(avg·q − cash)/(q(1−m))`，
+  空头 `(avg·q + cash)/(q(1+m))`。抄成一个分母 ⇒ 空头该强平时看起来安全。
+- **不变量**：现货 `available_cash >= 0`；永续 `equity >= 0`（cash 可为负）
+- **`apply_fill` 只加盈亏、不减名义价值**——这是"杠杆"的本质
+
+⚠️⚠️ **`margin_ratio` 的读法**：本模块用
+`(权益 − 维持保证金) / 名义价值`，这个口径下 **ratio 越小越危险**。
+反直觉之处在于**价格下跌时 ratio 会变大**（分子分母同时缩小、
+分母缩得更快）。实测：持仓 1 BTC @100 / cash=10，
+mark=110 → ≈9.996；mark=95 → ≈90.996。
+所以**不要用"ratio 上升"判断变安全**——用 `is_liquidated`。
+
+### A2：决策留痕（`tw/decision_log.py`）
+
+按**证据链六项**组织，每一项都有对应字段：
+
+| # | 要回答的问题 | 字段 |
+|---|---|---|
+| ① | 决策时能看到什么 | `visible_state` / `data_snapshot` / `context_hash` |
+| ② | Agent 相信什么 | `prompt_template` / `model` / `model_params` / `tool_calls` / `retrieved` |
+| ③ | 建议的动作 | `llm_raw`（**不截断**）/ `n_samples` / `samples` / `parsed` / `parse_ok` |
+| ④ | 建议是否真的变成交易 | `requested`（**风控前**，必须保留）/ `executed` / `order` / `reject_code` |
+| ⑤ | 什么规则接受/拒绝/改了量 | `risk`（= `RiskDecision.to_dict()`） |
+| ⑥ | 扣掉成本后的结果 | `outcome` / `outcome_filled` |
+
+**三条硬约束**：
+
+1. **`decision_id` 必须确定性**：sha256 只含
+   `run_id / tick / agent_id / prompt_template / model / context_hash`。
+   `wall_ms` / `latency_ms` / `outcome` **不能进**——
+   它们每次不同，进来就会让"同一次决策算出不同 ID"，回放核对直接失效。
+2. **可见状态的签名上没有 `future_*`** —— 从**函数签名**上堵住答案泄漏，
+   而不是靠纪律。
+3. **JSONL 只追加**：`open(mode="w")` 直接 `ValueError`。
+
+体检指标（`log_stats`）都是**直接可观测量**，不是拟合出来的刻度：
+`parse_ok_frac` / `executed_frac` / `abstain_frac` / `resized_frac` /
+`rejected_frac` / `incomplete_visible_frac` / `latency_ms_p50` …
+**留痕质量不会自动体现在收益上**（一个"只记成功解析"的实现收益更好看），
+所以必须独立报告。
+
+另有 `decision_stability`（多采样一致性——实测 Agnes 在
+temperature=0.2 下三次调用给出 1 sell / 2 hold，mean_consistency=0.667）
+与 `risk_contribution`（**风控贡献归因**：`median_size_ratio` + `by_rule`）。
+
+### A2：风控闸门（`tw/risk.py`）
+
+它只吃一个 `dict`（模型解析出来的意图），**不依赖 LLM、不依赖账户对象**，
+所以能在最便宜的环境里把全部分支测穷。
+
+| 检查 | 结果 |
+|---|---|
+| action 非法 / mid 无效 / sz·px·tp·sl 不可解析或非正 | **拒** → 退回 hold |
+| 委托价或 TP/SL 偏离 mid 超 `max_tp_sl_pct` | **拒**（⭐ 拦第 6 轮实测的 100 倍量级错误） |
+| TP/SL 在 mid 的错误一侧 | **拒**（反了会立即触发） |
+| 杠杆非法 / 超限 | **拒** |
+| 持仓数 / 单标的敞口 / 保证金 | **拒** |
+| 量超上限 | ⭐ **裁剪**（唯一会改量的一步） |
+
+**边界 = 「能不能推出意图」**：意图明确（量大了）→ 裁；
+语义错误（方向错 / 数值非法）→ 拒。
+这与 `apply_reduce_only` 是同一条边界。
+
+⚠️ **裁量必须排在敞口/保证金之前**（顺序不是风格问题，是**可达性**问题）：
+先判敞口的话，"买 1000"这种"想大了"的单会被 `exposure_cap` 抢先拒掉，
+`size_cap` 的裁剪分支**永远走不到**——成了不可达代码，且不报错、不警告。
+用**裁剪前的量**算敞口，等于拿一个不会发生的订单去拒绝一个会发生的订单。
+
+**执行顺序**：`hold → action → mid → sz → px → TP/SL → 杠杆 →
+⭐ 量上限(裁) → 持仓数/敞口 → 保证金`。
+
+---
+
 ## 目录
 
 ```
@@ -328,6 +430,19 @@ tw/                 库
   order_flow/   ⭐  二期阶段6/8：元订单拆分、Hawkes 自激到达
   experiments/  ⭐  二期阶段7：反身性实验的专用 runner（配对/独立性/禀赋一致性可测）
   calibration/  ⭐  二期阶段10：MSM 矩量距离 + 块自助法 + 随机搜索
+  marketdb.py   ⭐  数据层：SQLite 三源（真实/合成/回放）共用一套 schema，
+                    带拉取账本、入库不覆盖、K 线默认只读已确认
+  okx_data.py   ⭐  拉真实 OHLCV（分页游标减 1ms 防边界重复；失败也记账）
+  synthetic.py  ⭐  离线生成自测试数据（随机游走基准漂移严格为 0；OHLC 有影线）
+  mcp_server.py ⭐  MCP 服务（**只读**）：让 Agent 自己拉数据，不能下单
+  order_model.py ⭐ A1：OKX 风格订单模型（tdMode / posSide / reduceOnly /
+                    attachAlgoOrds / 五种 ordType / 拒单码 TW-1xxx）
+  account.py    ⭐ A1：保证金账户账本（分档 MMR / maker-taker 分开计费 /
+                    Position 加权开平与穿仓反手 / 强平价 / 权益与维持保证金）
+  decision_log.py ⭐ A2：决策留痕（证据链六项 / 确定性 decision_id /
+                    JSONL 只追加 / 多采样一致性 / 风控贡献归因）
+  risk.py       ⭐ A2：风控闸门（数值/方向/量/保证金四类；
+                    **只有量上限会裁剪，其余全部退回 hold**）
 
 
 strategies/     ⭐  示例策略（含两个反面基准：noop、random_taker）
@@ -340,8 +455,8 @@ gui/            ⭐  桌面端
   desktop.py         pywebview 窗口，失败自动退回浏览器
   static/index.html  单文件前端（零外部依赖，图表手写 canvas）
 
-tests/              870 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
-                    + 数据层与 MCP）
+tests/              1067 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
+                    + 数据层与 MCP + A1 订单模型与账户 + A2 留痕与风控）
                     ↑ 这个数字由 `scripts/selfcheck.py` 的 ③b 项与
                     `out/test_count.txt`（tests 步骤自动写回）对账——
                     手写的常量一定会脱节，所以要让它脱节时**被发现**
@@ -360,6 +475,16 @@ tests/              870 项测试（内核/市场/分析器/评估策略/GUI + �
              随机游走基准漂移严格为 0）/ test_mcp_server（⭐ 只读工具名里
              不得出现 order/trade/buy/sell/cancel/position；**不 import mcp**——
              「没装可选依赖」不该让核心验证失效）
+  A1 新增：test_order_model（⭐ 触发方向按开仓方向取反——写反会把止盈做成
+             立即触发的止损；post_only 交叉必须拒；fok 无法全成交必须拒；
+             reduce_only 方向错拒/超量裁；多空强平价分母不同；
+             **can_open 必须用"开仓后"权益**——含"在亏损仓位上继续加仓"
+             与"模拟权益 vs 真成交重算"两条对拍；
+             **保证金率口径是越小越危险**——见该模块 docstring 的 ⚠️⚠️ 段）
+  A2 新增：test_decision_log（⭐ decision_id 必须对 prompt_template 敏感；
+             不含 wall_ms/latency_ms/outcome；可见状态签名上没有 future_*；
+             风控拦截 100 倍量级错误；**裁量必须早于敞口**——
+             否则 size_cap 成不可达代码；被拒时 resized_to 必须清空）
 
 scripts/
   _common.py            公共常量与真实指标加载
@@ -402,7 +527,7 @@ scripts/
   bench_market.py   ⭐  内核性能与**等价性**基准：注入点带/不带某段计算，
                         既比墙钟，也比逐点行情是否完全一致
                         （只测速度不测等价 = 用"看起来差不多"换性能）
-  mutation_check.py     变异验证：63 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57 + 数据层与MCP M58~M63）
+  mutation_check.py     变异验证：76 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57 + 数据层与MCP M58~M63 + 订单模型与账户 M64~M71 + 留痕与风控 M72~M76）
                         ↑ 这个数字由 selfcheck 的 ③c 项与 mutation_check.py 里
                         实际注册的编号对账
                         `--only M40` 只跑指定变异体（新增变异体**必须**单独跑一次——
