@@ -1,0 +1,34 @@
+{
+  "next_available": 55,
+  "history": [
+    {
+      "ids": [],
+      "claimed_by": "初始化",
+      "claimed_at": "2026-09-20T10:23:19",
+      "note": "从 mutation_check.py 实读，最大编号 50 ⇒ next_available=51"
+    },
+    {
+      "ids": [
+        51
+      ],
+      "claimed_by": "工作线N-安全替换",
+      "claimed_at": "2026-09-20T10:23:44"
+    },
+    {
+      "ids": [
+        52,
+        53
+      ],
+      "claimed_by": "工作线L-回填标准配置",
+      "claimed_at": "2026-09-20T10:23:46"
+    },
+    {
+      "ids": [
+        54
+      ],
+      "claimed_by": "工作线M-功效分析",
+      "claimed_at": "2026-09-20T10:23:47"
+    }
+  ],
+  "note": "变异测试编号的权威来源。新增变异体前用 `python scripts/claim_mutation_ids.py --claim N --by <工作线>` 领取；next_available 的初值由 `--init` 从 mutation_check.py 实读推导，**不采用任何文档里预先写死的数字**。"
+}

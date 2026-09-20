@@ -827,6 +827,54 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M51',
+        '安全替换工具校验了**原文**而不是替换后的文本（等于没校验）'
+        '——破坏语法的替换会被放行并写回真实文件',
+        [
+            (
+                'scripts/safe_batch_replace.py',
+                '                try:\n                    ast.parse(modified)',
+                '                try:\n                    ast.parse(original)',
+            ),
+        ],
+    ),
+    (
+        'M52',
+        '回填时不再检查「标定/饱和检查/拟合三处种子数一致」'
+        '——某一处偷偷用了别的种子集合，数字会悄悄变得不可比',
+        [
+            (
+                'scripts/run_workstream_L.py',
+                '    bad = [r.get("n_seeds") for r in rows if r.get("n_seeds") != expected]',
+                '    bad = []   # 变异：不检查种子一致性',
+            ),
+        ],
+    ),
+    (
+        'M53',
+        'λ̄ 标定窗口退回历史口径（含瞬态）而不是实验窗口'
+        '——复现第六条纪律要防的那类「标定 ≠ 实验」问题',
+        [
+            (
+                'scripts/run_workstream_L.py',
+                '    return (WARMUP, WARMUP + HORIZON)',
+                '    return (500, 3_000)',
+            ),
+        ],
+    ),
+    (
+        'M54',
+        '功效分析的 ratio 方向写反（n2 = n1 / ratio 而不是 n1 * ratio）'
+        '——ratio=1 时完全看不出来，只在不等样本量下暴露',
+        [
+            (
+                'scripts/power_analysis_H4.py',
+                '    n2 = n1 * ratio\n    if n2 < 2:',
+                '    n2 = n1 / ratio\n    if n2 < 2:',
+            ),
+        ],
+    ),
 
 ]
 
@@ -894,7 +942,15 @@ def first_failure_names(output: str, limit: int = 3) -> list[str]:
 # ----------------------------------------------------------------------
 def prepare_sandbox(work_dir: Path, pkgs: set[str]) -> None:
     work_dir.mkdir(parents=True, exist_ok=True)
-    for sub in sorted(pkgs) + ["data"]:
+    # ⚠️ ``docs/`` 也要复制（它只有几 MB）。
+    #   理由：**sandbox 里缺 docs/ 会让基线变红**，而基线一红，
+    #   每个变异体都会"变红"——整份变异验证就变成假证据。
+    #   本项目为此栽过两次（一次是产物依赖、一次是编号账本依赖），
+    #   两次的修法都是"给测试加 skip"；这次改成**从根上补上 docs/**，
+    #   让那些测试能真正跑（而不是被跳过）——跳过等于没测。
+    #   ``out/``（约 500MB）仍不复制：那里的产物可以由脚本重建，
+    #   依赖它的测试继续用显式 skip。
+    for sub in sorted(pkgs) + ["data", "docs"]:
         src_dir = ROOT / sub
         if src_dir.is_dir():
             shutil.copytree(src_dir, work_dir / sub, dirs_exist_ok=True)

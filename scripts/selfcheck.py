@@ -444,7 +444,16 @@ def check_imports(r: Report) -> None:
         #   audit_numeric_claims    —— 数值陈述扫描（第七条纪律的自动化）
         #   make_resolution_summary —— 本轮交付小结
         "run_workstream_H", "run_workstream_I", "run_workstream_E",
-        "run_workstream_J", "audit_numeric_claims", "make_resolution_summary"]
+        "run_workstream_J", "audit_numeric_claims", "make_resolution_summary",
+        # 回填标准配置与 H4 做实那一轮新增的六个：
+        #   safe_batch_replace    —— 第八条纪律的强制执行入口（临时副本 + ast 校验）
+        #   claim_mutation_ids    —— 变异编号的权威分配器
+        #   run_workstream_L      —— 回填 7 档 × 8 种子到历史家族
+        #   run_workstream_M      —— H4 功效分析 + 加码/诚实报告
+        #   power_analysis_H4     —— 功效公式（scipy 非中心 t 分布）
+        #   update_inventory_post_L_M —— 收尾：把 L/M 结果并入历史清单
+        "safe_batch_replace", "claim_mutation_ids", "run_workstream_L",
+        "run_workstream_M", "power_analysis_H4", "update_inventory_post_L_M"]
     bad2 = []
     for m in scr_mods:
         try:
