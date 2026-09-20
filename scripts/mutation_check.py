@@ -912,6 +912,86 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M58',
+        '行情库的重复写入改成**覆盖**（ON CONFLICT DO UPDATE）'
+        '——「入库后不覆盖」那条约束被悄悄取消，'
+        '「当时的决策看到哪版数据」这个问题从此没有答案',
+        [
+            (
+                'tw/marketdb.py',
+                '                INSERT OR IGNORE INTO candles',
+                '                INSERT OR REPLACE INTO candles',
+            ),
+        ],
+    ),
+    (
+        'M59',
+        '读 K 线时不再过滤未确认的根（confirmed_only 默认改 False）'
+        '——**未走完的 K 线 = 未来数据**会流进策略，'
+        '这是本项目测量纪律里最不可接受的一类错误',
+        [
+            (
+                'tw/marketdb.py',
+                '        confirmed_only: bool = True,\n        name: str = "",',
+                '        confirmed_only: bool = False,\n        name: str = "",',
+            ),
+        ],
+    ),
+    (
+        'M60',
+        'OKX 分页游标不减 1ms（after=oldest 而不是 oldest−1）'
+        '——边界那根会同时出现在两批里，'
+        '行数虚高而**看不出异常**（主键会挡掉重复写入，所以数字不会明显错）',
+        [
+            (
+                'tw/okx_data.py',
+                '                cursor = oldest - 1  # ⚠️ 减 1ms，否则边界那根会重复出现',
+                '                cursor = oldest  # ⚠️ 减 1ms，否则边界那根会重复出现',
+            ),
+        ],
+    ),
+    (
+        'M61',
+        '分页「没有前进」的守卫被去掉（不死循环而是静默转圈）'
+        '——静默死循环比报错危险得多：调用方以为在拉数据，实际原地打转',
+        [
+            (
+                'tw/okx_data.py',
+                '                if oldest >= cursor:\n',
+                '                if False:\n',
+            ),
+        ],
+    ),
+    (
+        'M62',
+        '拉取失败不写账本（except 分支里不再调用 log_fetch）'
+        '——失败不留痕 = 半年后不知道「当时是不是拉失败了」，'
+        '而账本存在的全部意义就是回答这个',
+        [
+            (
+                'tw/okx_data.py',
+                '            from_ts=want_from, n_rows=total, pages=pages, started_at=started,\n'
+                '            finished_at=int(time.time() * 1000), ok=False, error=str(exc)[:400],\n',
+                '            from_ts=want_from, n_rows=total, pages=pages, started_at=started,\n'
+                '            finished_at=int(time.time() * 1000), ok=True, error=str(exc)[:400],\n',
+            ),
+        ],
+    ),
+    (
+        'M63',
+        '合成数据的 high/low 直接取 max/min(open, close)（无影线）'
+        '——K 线退化成折线，蜡烛图画不出形态，'
+        '「窗口内极值」这个 OHLC 的定义被废掉',
+        [
+            (
+                'tw/synthetic.py',
+                '        hi = max(hi, p0, p1) * (1.0 + abs(rng.normal(0.0, 2e-4)))\n'
+                '        lo = min(lo, p0, p1) * (1.0 - abs(rng.normal(0.0, 2e-4)))',
+                '        hi = max(p0, p1)\n        lo = min(p0, p1)',
+            ),
+        ],
+    ),
 
 ]
 

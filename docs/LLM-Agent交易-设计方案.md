@@ -183,9 +183,12 @@
 
 ---
 
-## 4. 建议架构（五层）
+## 4. 建议架构（六层）
 
 ```
+⓪ 数据层（新增，见 §4.5）——「真实 / 历史 / 自生成」三源，统一进 SQLite
+   └─ 三种来源、一个 schema；按需拉取；缓存优先、联网兜底
+
 ① 数据层（Point-in-time，防泄漏的第一道）
    └─ 市场快照：盘口深度 / 近期成交 / 资金费率 / 标记价
       严格只取 tick ≤ t 的数据；上下文构造器带 hash 便于事后核对
@@ -217,6 +220,142 @@
 - **回放模式默认关外部访问**：LLM 只能看我们给的上下文——
   这是防"读到答案"的唯一可靠做法（不是靠嘱咐它别上网）。
 - **每次决策都记 prompt 模板版本与模型名**：否则半年后不知道哪版的成绩。
+
+---
+
+## 4.5 数据层（2026-09-20 用户新增需求）
+
+> 用户原话：*「实时拉取 OKX 或其他交易所数据…建立一个数据库 sqlite…
+> 不必所有币种都拉，在选择准备交易的时候才去拉…也可以下载历史数据，
+> 还有自己生成数据，这样子 agent 可以利用不同来源的数据进行自我测试、真实数据测试。」*
+
+### 三种数据来源，一个 schema
+
+| 来源 | 用途 | 获取方式 | 关键属性 |
+|---|---|---|---|
+| `live` | **真实盘面**（当前） | OKX 公开端点，按需拉 | 有网络依赖；**不可复现**（数据会变） |
+| `history` | **真实历史**（回测） | OKX 历史端点，一次拉完存库 | 落库后**可复现**；有 3 个月/3 年上限 |
+| `synthetic` | **自生成**（压力测试） | 复用本项目 ABM 引擎 | **完全可复现**；已知 ground truth |
+
+⭐ **三者用同一张表**，只多一列 `source`。这是刻意的设计：
+Agent 的**同一套策略代码**应该在三源上跑出可对比的结果；
+如果三源走三套接口，那么「策略在真实数据上表现不同」到底是策略的问题
+还是接口口径的问题，就分不清了——**这正是本项目「同一个量不要有两条路径」
+那条纪律的同一形态**。
+
+### SQLite 库结构（草案）
+
+```sql
+-- 行情：三源共用。source + inst_id + bar + ts 是唯一键
+CREATE TABLE candles (
+  source TEXT NOT NULL,          -- 'okx' | 'synthetic'
+  inst_id TEXT NOT NULL,         -- 'BTC-USDT' / 'BTC-USDT-SWAP'
+  bar TEXT NOT NULL,             -- '1m' '15m' '1H' '1D'
+  ts INTEGER NOT NULL,           -- 毫秒（开盘时间，与 OKX 一致）
+  open REAL, high REAL, low REAL, close REAL, volume REAL,
+  confirm INTEGER DEFAULT 1,     -- OKX 的 confirm 字段：0=未走完
+  fetched_at INTEGER,            -- 本地写入时刻（区分「数据时间」与「拿到时间」）
+  PRIMARY KEY (source, inst_id, bar, ts)
+);
+
+-- 快照类（无需 OHLC 的量）：资金费率 / 未平仓量 / 标记价
+CREATE TABLE metrics (
+  source TEXT, inst_id TEXT, kind TEXT,   -- 'funding_rate'|'open_interest'|'mark_price'
+  ts INTEGER, value REAL, extra TEXT,      -- extra 存 JSON（如 nextFundingTime）
+  PRIMARY KEY (source, inst_id, kind, ts)
+);
+
+-- 盘口快照（实时拉取时选存；全存会很占空间）
+CREATE TABLE books (
+  source TEXT, inst_id TEXT, ts INTEGER, sz INTEGER,
+  bids TEXT, asks TEXT,        -- JSON: [[px, sz, n], ...]
+  PRIMARY KEY (source, inst_id, ts, sz)
+);
+
+-- ⭐ 拉取账本：回答「这份数据是什么时候、用什么参数拉下来的」
+CREATE TABLE fetches (
+  id INTEGER PRIMARY KEY,
+  source TEXT, inst_id TEXT, bar TEXT,
+  from_ts INTEGER, to_ts INTEGER, n_rows INTEGER,
+  started_at INTEGER, finished_at INTEGER,
+  endpoint TEXT,               -- 哪个端点（candles vs history-candles）
+  ok INTEGER, error TEXT, pages INTEGER
+);
+```
+
+**为什么 `fetches` 表不是多余的**：本项目最贵的一课是「结果对 ≠ 有能力知道
+结果对不对」。行情库也一样——**没有拉取账本，半年后没人知道某根 K 线是
+从哪个端点、什么参数拿的**，而 OKX 的 `candles`（热缓存，近 3 个月）与
+`history-candles`（冷存储，上限 100 条）**可能返回不同的修正后数据**。
+
+### 按需拉取（用户明确要求）
+
+**不预下载全市场**。触发条件是「某标的一次即将开始的交易会话」：
+
+```
+用户/Agent 说「我要交易 BTC-USDT」
+   ↓
+① 查库：这个标的有多少数据？覆盖到什么时间？
+   ↓ 不足
+② 拉：candles 补近端 + history-candles 倒推补远端（分页）
+   ↓
+③ 存库（幂等 UPSERT），写 fetches 账本
+   ↓
+④ 会话开始了，之后全程只读库（决策路径不碰网络）
+```
+
+⭐ **第 ④ 步是硬约束，不是优化**：决策期间联网 = 引入不可复现性 +
+可能读到未来数据。**库是决策路径的唯一数据源。**
+
+### OKX 公开端点（查证结果，全部**无需鉴权**）
+
+| 端点 | 用途 | 单次上限 | 限频 |
+|---|---|---|---|
+| `/api/v5/market/candles` | 近期 K 线（**近 3 个月**，热缓存） | **300** | 40 次/2s |
+| `/api/v5/market/history-candles` | 历史 K 线（**主流币约 3 年**，冷存储） | **100** | 20 次/2s |
+| `/api/v5/market/books` | 盘口深度 | `sz` 5/10/20/50/100/400 档 | — |
+| `/api/v5/market/trades` | 最近成交 | — | — |
+| `/api/v5/public/funding-rate` | 资金费率（**仅永续**） | — | 20 次/2s |
+| `/api/v5/public/open-interest` | 未平仓量 | — | 20 次/2s |
+| `/api/v5/public/mark-price` | **标记价**（强平计算基准） | — | — |
+| `/api/v5/public/instruments` | 合约规格（tick/lot/最小下单） | — | 10 次/2s |
+
+⚠️ **两个坑（查证时发现，不踩第二次）**：
+
+1. **分页参数命名反直觉**：`after` 传时间戳返回的是**比它更早**的数据、
+   `before` 返回**更新**的。倒推历史要用 `after` 翻页，且两者**不能同时传**。
+   翻页时取上批最旧一条 `ts − 1ms` 作为下一次 `after`——
+   **减 1ms 是必须的**，否则边界那根会出现在两批里（重复写入会被主键挡掉，
+   但会污染 `n_rows` 统计）。
+2. **`confirm` 字段**：`'0'` 表示这根 K 线还没走完、价格仍在跳。
+   **决策时必须只用 `confirm='1'` 的根**，否则就是读未来的数据
+   （与项目「路径覆盖事件全程但不越界」同源）。
+
+### 自生成数据（用户明确要求「自己生成数据」）
+
+**这是本项目最有优势的一块——引擎已经在那儿了。**
+
+价值不在于「造更多数据」，而在于造**已知 ground truth 的对照**：
+
+| 生成方式 | 能验证什么 | 为什么真实数据做不到 |
+|---|---|---|
+| 改 `scenarios.py` 参数 | 策略在极端行情下的行为 | 真实数据里很少出现 liquidation 场景 |
+| 注入已知冲击 | Agent 能否识别并正确反应 | 真实市场的事件归因本身有内生性问题 |
+| **同种子重跑** | Agent 决策的可复现性 | 真实数据只有一条路径，无法重放 |
+| 调主体构成（零智能/基本面/图表派比例） | 策略对市场微结构的敏感性 | 无法控制真实市场的主体构成 |
+
+⭐ **最关键的一条**：自生成数据能让「**Agent 的收益是本事还是行情**」这个问题
+有一个**答案已知的对照组**——因为我们可以造出「基本面随机游走、
+完全没有可预测性」的市场，此时任何正收益都只能是运气。
+**这类对照在真实数据上永远做不了。**
+
+### 与测量纪律的接口
+
+- **`live` 数据进库后就不再更新**（同一 `(source,inst,bar,ts)` 不覆盖）
+  → 保证「当时的决策」事后可复现，哪怕交易所之后修正了历史
+- 每条决策留痕里记 `data_snapshot_id`（库里数据的最大 ts + 拉取时间）
+  → 半年后能确认「那次决策看到的是哪一版数据」
+- **`synthetic` 源必须记构造参数**（种子 + 场景名），否则无法重造
 
 ---
 
@@ -283,19 +422,139 @@
 
 ---
 
+## 6.5 MCP 服务（2026-09-20 用户新增需求）
+
+> 用户原话：*「还有也要做 MCP，方便 agent 调用」*
+
+### 先分清「谁的 Agent」
+
+这一节有个容易混的地方，必须写清楚：
+
+| 场景 | 谁是 MCP 的「客户端」 | 什么在调工具 |
+|---|---|---|
+| **本项目的 LLM 交易 Agent** | 项目自己 | ❌ **不需要 MCP**——项目直接 import `tw/*` 更快更可控 |
+| **外部 Agent**（Claude Desktop / Cursor / 其他） | 那些宿主 | ✅ **需要 MCP** |
+
+⇒ **MCP 的价值是「让外部 Agent 能操作这个项目」**，不是给内部 Agent 用。
+内部 Agent 走 Python 函数调用；MCP 是**对外的一扇门**。
+
+### 三种消费者（各自的用法不同）
+
+1. **外部 AI 助手**（Claude/Cursor）→ 让它帮你查行情、看实验、跑对照
+2. **本项目自己的开发**（我）→ 用 MCP 校验接口设计是否自洽
+3. **未来的多 Agent 协作**（§7 的 C 路线）→ Agent 之间通过 MCP 共享能力
+
+### 工具设计（按「读写分离 + 危险度分级」）
+
+⚠️ 关键安全原则：**能读的和能下单的不能是同一批工具**，
+且**能下单的工具默认不启用**。
+
+**只读类（默认启用，无副作用）**
+
+| 工具 | 参数 | 返回 |
+|---|---|---|
+| `list_instruments` | `source`（okx/synthetic） | 库里有数据的标的 + 时间范围 |
+| `get_candles` | `inst_id, bar, from_ts, to_ts, limit` | OHLCV 数组（**列式**，省 token） |
+| `get_market_snapshot` | `inst_id` | 当前 bid/ask/mid/spread/资金费率/标记价 |
+| `list_scenarios` | — | 5 个场景名 + 描述 |
+| `list_strategies` | — | 可用策略名 |
+| `get_run_summary` | `run_id` | 该次实验的指标汇总 |
+| `get_decision_log` | `run_id, limit` | 决策留痕（含理由、入场出场价） |
+| `compare_runs` | `run_id_a, run_id_b` | 两两对照 + **区间重叠判定**（复用第十条纪律） |
+
+**写入类（需显式开启）**
+
+| 工具 | 说明 | 护栏 |
+|---|---|---|
+| `fetch_data` | 按需拉 OKX 数据入库 | 只允许白名单 `inst_id`；限频；写 `fetches` 账本 |
+| `run_backtest` | 跑一次实验 | 上限 tick 数（复用 `MAX_LAB_TICKS` 思路） |
+
+**交易类（⭐ 默认关闭，`TW_MCP_ALLOW_TRADE=1` 才启）**
+
+| 工具 | 说明 |
+|---|---|
+| `place_order` | 下单（A 路线 = 写进模拟账本；B 路线 = 真钱） |
+| `cancel_order` / `get_positions` | — |
+
+⚠️ **A 路线（模拟）下这些工具安全**（只改内存账本）；
+**B 路线（真钱）下必须**：独立进程 + 独立 token + 单笔上限 + 日累计上限 +
+人工确认开关。**在做 B 之前，这一组不放出去。**
+
+### 技术选型（查证结果 + **实测修正**）
+
+- **官方 Python SDK 已到 v2**（`mcp` **2.2.0**）；v2 是大重写，v1.x 仍在维护。
+  **新项目直接用 v2。**
+- ⚠️ **v2 把 `FastMCP` 改名成了 `MCPServer`**（`from mcp.server.mcpserver import
+  MCPServer`）。网上绝大多数教程仍是 v1 的 `from mcp.server.fastmcp import FastMCP`，
+  **照抄会在 v2 上直接 `ModuleNotFoundError`** —— 本轮实测踩到。
+  实现里 `_require_mcp()` 兼容两者，优先 v2。
+- ⚠️ v2 字段风格从 camelCase 转到 snake_case：`serverInfo`→`server_info`、
+  `inputSchema`→`input_schema`、`structuredContent`→`structured_content`、
+  `isError`→`is_error`。实测协商到的协议版本是 **2025-11-25**。
+- **`@tool()` 装饰器风格不变**：函数签名 + docstring 自动变成 JSON Schema，
+  **零样板代码** —— 这一点 v1/v2 一致。
+- **transport 选 `stdio`**：客户端把服务作为子进程拉起，走 stdin/stdout 的
+  JSON-RPC。**不绑端口、不需要 TLS、单机默认安全**——与本项目 GUI 那套
+  「只绑 127.0.0.1」是同一个安全哲学
+- 备选 `streamable-http`：仅当要跨机时用（未来多 VM 场景）
+- ⚠️ **`python -m 包名` 需要 `__main__.py`**：光有 `__init__.py` 里的
+  `if __name__ == "__main__"` 不会执行。与打包那次「入口与包同名」是同一类问题
+  （运行方式与文件结构不匹配）。
+
+**教训**：只读文档不试跑，会在「类名」这种最表层的地方翻车。
+**写 MCP 服务前先 `pip install` 再 `import` 一次，比读十篇教程有用。**
+
+### ⚠️ 一条必须提前说的依赖风险
+
+**`mcp` 是第三方包，而本项目现在的依赖只有 numpy / scipy / matplotlib**
+（`tw/realdata.py` 的注释里明确写过「多一个 pandas 就多一个『环境不对所以
+没跑』的借口」）。
+
+⇒ 处理方式：
+1. **MCP 服务作为可选组件**，放在 `mcp_server/` 目录，**不进核心测试链**
+2. `import mcp` 失败时**给出明确指引**（`pip install "mcp>=2.2.0"`），不静默
+3. 核心库 `tw/*` **绝不 import mcp**——保证「不装 mcp 也能跑全部研究」
+4. 在 `packaging/` 的 exe 里**默认不打进去**（体积 + 用不上）
+
+### 目录结构（建议）
+
+```
+mcp_server/
+├── __init__.py
+├── server.py        # FastMCP 实例 + 工具注册
+├── tools_read.py    # 只读工具（行情/实验/留痕）
+├── tools_write.py   # 写入工具（拉数据/跑实验）
+├── tools_trade.py   # 交易工具（默认关闭）
+└── README.md        # 如何挂到 Claude Desktop / Cursor
+```
+
+**验收方式**：用 `mcp dev server.py`（MCP Inspector）逐个调通工具，
+并**用一个真实外部客户端连一次**——自己写的客户端测不出兼容性问题。
+
+---
+
 ## 7. 阶段划分（建议顺序，每阶段可独立验收）
 
 | 阶段 | 内容 | 验收 | 量级 |
 |---|---|---|---|
+| **A0** | ⭐ **数据层**：SQLite schema + 三源适配 + 按需拉取 + `fetches` 账本 | 单测：幂等 UPSERT、分页边界不重不漏、`confirm` 过滤、离线读库 | **中** |
 | **A1** | OKX 风格订单模型 + 账户账本（保证金/杠杆/强平/TP-SL 触发） | 单测：强平价、保证金率、TP/SL 触发、`reduceOnly` 生效 | 中~大 |
 | **A2** | 决策留痕层（记录结构 + JSONL 落盘 + **回放**） | 单测：同种子回放逐位一致；记录字段完整性 | 中 |
 | **A3** | LLM 接入（Agnes）+ prompt 模板 + 解析 + 风控闸门 | 用 **no-internet 回放**跑通一次；解析失败也留痕 | 中 |
 | **A4** | 评估报告（分层 + 与 noop/random 对照 + 成本敏感性） | 出一份真实报告 | 中 |
 | **A5** | GUI 集成（决策时间线、留痕浏览器、订单/持仓面板） | 截图确认 | 中 |
+| **A6** | ⭐ **MCP 服务**（只读工具优先） | MCP Inspector 逐个调通 + **一个真实外部客户端连一次** | 中 |
 | **B**（可选，后置） | 真实 OKX 网关（**真钱，需单独评估**） | — | 小（替换执行器） |
 | **C**（可选） | 多 Agent 圆桌（多个模型辩论后再决策） | — | 未知 |
 
-**先做 A1 + A2**：它们是**任何**后续方案的地基，且与"用不用 LLM"无关。
+**顺序理由**：
+- **A0 排最前**：它是「数据从哪来」的问题，**没有它后面全部无源**。
+  而且它**完全不依赖 LLM**，可以立刻开工、独立验收。
+- **A1 + A2 是任何后续方案的地基**，且与「用不用 LLM」无关。
+- **A6 放最后但独立**：MCP 是对外的门，**门后的东西得先有**才有意义。
+  不过它的只读工具（`get_candles` / `get_run_summary`）其实**只要 A0 完成
+  就能做**——所以也可以**把 A6 的只读部分提前到 A0 之后**，
+  用来给外部 Agent 做第一轮体验。
 
 ---
 
@@ -313,22 +572,47 @@
 
 ---
 
-## 9. 需要用户拍板的三件事
+## 9. 需要用户拍板的事
 
-1. **A 还是 B**：先做模拟（用 OKX 规则）还是直接连真实 OKX？
-   （建议 A；B 作为 A 验证通过后的最后一小步）
-2. **决策频率**：每个 tick？每 N tick？每根 K 线收盘？（决定 LLM 调用量与成本）
-3. **Agnes 的具体用法**：确认用 `agnes-2.5-flash`；是否需要我
-   先把"能否稳定调用"验证一遍再做设计？
+### ✅ 已定（2026-09-20 用户回复「A吧」）
+
+1. **路线**：**A（模拟，用 OKX 规则不连网）**。B（真钱）作为 A 验证通过后的
+   最后一小步。
+2. **数据层**：实时拉 OKX 公开行情 + SQLite + 按需拉取 + 历史下载 +
+   自生成数据 + MCP 服务（已写入 §4.5 / §6.5）。
+
+### ⬜ 仍待定
+
+| # | 问题 | 影响 | 我的建议 |
+|---|---|---|---|
+| 1 | **决策频率**：每 tick / 每 N tick / 每根 K 线收盘 | LLM 调用量、成本、`reason` 的信息量 | **每根 K 线收盘**——理由：① 与 OKX 数据天然的粒度对齐，不用自己聚合；② LLM 延迟 2~6s，tick 级根本来不及；③ 「收盘」是真实交易员的标准决策时点 |
+| 2 | **哪些标的** | 库的规模、拉取时间 | 先 **BTC-USDT-SWAP + ETH-USDT-SWAP** 两个——主流、数据全、有资金费率（永续专属） |
+| 3 | **Agnes key 是否轮换** | 安全 | ⚠️ **建议换一个**：现有 key 已在本会话命令行里出现过。换完只放环境变量，不写进任何文件 |
+| 4 | **MCP 只读部分是否提前**（排到 A0 之后而非 A6） | 影响你何时能用自己的助手探索 | 建议**提前**——成本低，且能早点看到「外部 Agent 用起来什么感觉」 |
 
 ## 附：本次查证的来源
 
+### 订单与交易所（第六轮）
 - OKX API v5 官方文档（下单参数、`attachAlgoOrds`、算法单、持仓字段）
 - okx-api / okx_rs 的 SDK 端点清单（订单生命周期、批量操作）
 - arXiv 2605.19337《Agentic Trading: When LLM Agents Meet Financial Markets》
-  （77 篇研究的证据审计；"协议不可比"与可复现性缺失的统计）
+  （77 篇研究的证据审计；「协议不可比」与可复现性缺失的统计）
 - OpenWisdom《How to Evaluate LLM Trading Agents Without Backtest Theater》
   （最小证据链六项、三层分离、成本先行、弃权评分）
 - Libertify《Financial Agents Orchestration Framework》
   （Memory Agent 的确定性 UUID、A2A 消息、风险闸门 `vol_ok/beta_ok/dd_ok`）
 - 中文实践总结《LLM 交易代理的 Alpha 幻觉》（五层架构、输出解析器 + 风险过滤器）
+
+### 行情数据与 MCP（第七轮新增）
+- OKX 公开行情端点（`/market/candles`、`/market/history-candles`、
+  `/market/books`、`/market/trades`、`/public/funding-rate`、
+  `/public/open-interest`、`/public/mark-price`、`/public/instruments`）
+  ——**全部免鉴权**；限频与单次上限见 §4.5 表格
+- python-okx 端点封装拆分说明（**热缓存 vs 冷存储**导致两个 K 线端点
+  上限不同：300 vs 100）
+- OKX **API 协议第 3.2(b) 条**提到官方有「Agent Trade Kit（MCP Server /
+  Skills / CLI）」——**说明交易所自己也认为 MCP 是标准接法**
+- Model Context Protocol 官方站（Tools / Resources / Prompts 三原语、
+  stdio vs Streamable HTTP）
+- **MCP Python SDK v2（`mcp` 2.2.0）**：对应 2026-07-28 规范，
+  `FastMCP` 装饰器风格，`pip install "mcp[cli]>=2.2.0"`

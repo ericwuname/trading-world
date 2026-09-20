@@ -191,6 +191,119 @@ class MyMaker(Strategy):
 
 ---
 
+## 行情数据库：真实 / 历史 / 自生成，一个 schema
+
+```bash
+python scripts/data_cli.py list                      # 库里有什么
+python scripts/data_cli.py fetch --inst BTC-USDT-SWAP --bar 1H --days 90   # 联网按需拉
+python scripts/data_cli.py snapshot --inst BTC-USDT-SWAP                   # 资金费率/未平仓量/标记价
+python scripts/data_cli.py synth --n 2000 --seed 0   # 离线生成自测试三件套
+python scripts/data_cli.py ledger -n 20              # 拉取账本
+```
+
+**三种来源共用一套表**，只多一列 `source`：
+
+| 来源 | 用途 | 可复现性 |
+|---|---|---|
+| `okx` | 真实盘面 / 历史 | **入库后不覆盖** ⇒ 事后可复现 |
+| `synthetic` | 压力测试 / 反事实 | **完全可复现**（同 seed + 同参数） |
+
+⭐ 共用 schema 是刻意的：Agent 的**同一套策略代码**要在三源上跑出可对比的结果；
+若三源走三套接口，「策略在真实数据上表现不同」到底是策略的问题还是接口口径的问题，
+就分不清了 —— 与「同一个量不要有两条路径」是同一条纪律。
+
+### 三条不可动摇的约束
+
+1. **决策路径只读库**。联网只发生在「会话开始前」的准备阶段。
+   决策期间联网 = 引入不可复现性 + 可能读到未来数据。
+2. **入库后不覆盖**（除非显式 `overwrite=True`）。保证「当时的决策看到哪版数据」
+   事后有确定答案，哪怕交易所之后修正了历史。
+3. **拉取必须记账**（`fetches` 表），**失败也记**。没有账本，半年后没人知道
+   某根 K 线是从哪个端点、什么参数拿的 —— 而 OKX 的 `candles`（热缓存）
+   与 `history-candles`（冷存储）**可能返回不同的修正后数据**。
+
+### 按需拉取（不预下载全市场）
+
+```
+「要交易 BTC-USDT-SWAP」→ 查库够不够 → 不够才联网 → 幂等 UPSERT + 记账
+                                              ↓
+                                     会话开始后**全程只读库**
+```
+
+第二次对同一范围调用 `fetch` 会返回 `(cached)`、**0 次网络请求**（已实测）。
+
+### 自生成数据：本项目最大的优势
+
+引擎已经在那儿了。价值不在于「造更多数据」，而在于造**已知 ground truth 的对照**：
+
+| regime | 它回答的问题 |
+|---|---|
+| `normal` | **零可预测性** —— 策略在这里赚钱 = 运气或泄漏，**不可能是本事** |
+| `trend` | **有方向可抓** —— 若策略在这里也没反应，说明它根本没在看价格 |
+| `vol_cluster` | **波动率突变** —— 风控会不会失效 |
+
+三件套**共享初始条件**（同 seed / 同起点 / 同价格），差别只在生成机制。
+
+⭐ **真实数据永远给不了 `normal` 这个保证** —— 真实市场里你无法排除
+「那个时期确实有可预测性」。所以这条基准是**真实数据不可替代**的。
+
+⚠️ 三件套的 `inst_id` 会带 regime 后缀（`SYNTH-BTC__normal` 等）。
+必须这样：三份世界时间轴完全相同，若共用 `inst_id`，主键
+`(source, inst_id, bar, ts)` 会撞，`INSERT OR IGNORE` 会**静默丢掉后两份**
+（实测踩到：三个 regime 只剩一个，且不报错）。
+
+### OKX 公开端点的两个坑（已查证，写在这里免得再踩）
+
+1. **分页参数命名反直觉**：`after` 传时间戳返回的是**比它更早**的数据、
+   `before` 返回**更新**的。倒推历史用 `after` 翻页，两者**不能同时传**。
+   翻页取上批最旧 `ts − 1ms` 作为下一次 `after` —— **减 1ms 是必须的**。
+2. **`confirm='0'` 表示这根 K 线还没走完**。`load_candles` **默认过滤**它们：
+   让未走完的根流进策略，等于**让策略读到未来**。
+
+---
+
+## MCP 服务：让外部 Agent 操作这个项目
+
+```bash
+pip install "mcp>=2.2.0"          # 可选依赖，核心库绝不 import 它
+python -m mcp_server              # stdio 传输，只读工具
+TW_MCP_ALLOW_WRITE=1 python -m mcp_server   # 再开写入（会联网）
+```
+
+**先分清「谁的 Agent」**：
+
+| 场景 | 需要 MCP 吗 |
+|---|---|
+| **本项目的 LLM 交易 Agent** | ❌ 不需要 —— 直接 `import tw.*` 更快更可控 |
+| **外部 Agent**（Claude / Cursor / 其他） | ✅ 需要 |
+
+⇒ MCP 是**对外的一扇门**，不是内部调用路径。
+
+### 工具分级（读写分离 + 危险度分级）
+
+| 级别 | 开关 | 工具 |
+|---|---|---|
+| **只读** | 默认启用 | `list_instruments` `get_candles` `get_market_summary` `get_metrics` `list_scenarios` `list_strategies` `get_fetch_ledger` `get_db_stats` |
+| **写入** | `TW_MCP_ALLOW_WRITE=1` | `fetch_data`（限频 60s/标的、days ≤ 1100）、`generate_synthetic_data`（≤ 50000 根，纯离线） |
+| **交易** | — | ⚠️ **未实现，且这是有意的** |
+
+为什么交易工具是空的：A 路线（模拟）下下单由项目内部执行器完成，**不需要 MCP**；
+B 路线（真钱）需要单独一轮设计与评审（独立进程 / 单笔与日累计上限 /
+人工确认 / 三级放行）。**这不是占位符，是决定。**
+
+> 谁要绕过这里直接加 `place_order`，请先回答：
+> **如果这个工具被误调用一次，损失上限是多少？** 答不上来就不该加。
+
+### 三条实现纪律
+
+1. **列式而非行式返回**（省一大半 token）。
+2. **一定带元信息**（`source` / `range` / `n`）—— 与「报告里的数字要能追溯」同源。
+3. **不做隐式截断** —— 超限就报错并说明上限，不静默返回一部分。
+
+完整说明见 **`mcp_server/README.md`**。
+
+---
+
 ## 目录
 
 ```
@@ -227,7 +340,8 @@ gui/            ⭐  桌面端
   desktop.py         pywebview 窗口，失败自动退回浏览器
   static/index.html  单文件前端（零外部依赖，图表手写 canvas）
 
-tests/              733 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖）
+tests/              870 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
+                    + 数据层与 MCP）
                     ↑ 这个数字由 `scripts/selfcheck.py` 的 ③b 项与
                     `out/test_count.txt`（tests 步骤自动写回）对账——
                     手写的常量一定会脱节，所以要让它脱节时**被发现**
@@ -241,6 +355,11 @@ tests/              733 项测试（内核/市场/分析器/评估策略/GUI + �
            （⭐ 元订单执行期不漏基础决策、基本面派方向锚定、配对同种子、
              "修复前"对照组真的关了做空额度、联合市场两种行为同时在场、
              合并计划必须写成**能渲染的 markdown**）
+  数据层新增：test_marketdb（⭐ 三源共用 schema、入库不覆盖、默认过滤未确认 K 线、
+             分页不重不漏、分页不前进必须报错、拉取失败也记账、OHLC 必须有影线、
+             随机游走基准漂移严格为 0）/ test_mcp_server（⭐ 只读工具名里
+             不得出现 order/trade/buy/sell/cancel/position；**不 import mcp**——
+             「没装可选依赖」不该让核心验证失效）
 
 scripts/
   _common.py            公共常量与真实指标加载
@@ -283,7 +402,7 @@ scripts/
   bench_market.py   ⭐  内核性能与**等价性**基准：注入点带/不带某段计算，
                         既比墙钟，也比逐点行情是否完全一致
                         （只测速度不测等价 = 用"看起来差不多"换性能）
-  mutation_check.py     变异验证：57 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57）
+  mutation_check.py     变异验证：63 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57 + 数据层与MCP M58~M63）
                         ↑ 这个数字由 selfcheck 的 ③c 项与 mutation_check.py 里
                         实际注册的编号对账
                         `--only M40` 只跑指定变异体（新增变异体**必须**单独跑一次——
@@ -294,6 +413,8 @@ scripts/
   run_sweep_study.py    扫单事件研究（延续 vs 反转）
   make_report.py        生成单文件 HTML 交付报告
   gui.py            ⭐  桌面端启动入口
+  data_cli.py       ⭐  行情库工具：list / fetch（按需拉取，联网）/ snapshot /
+                        synth（离线自生成）/ ledger（拉取账本）/ prune
   run_stage5.py     ⭐  二期阶段5：永续合约（E5.0 标定 / E5.1~E5.4）
   run_stage6.py     ⭐  二期阶段6：长记忆订单流（E6.0~E6.5，带磁盘缓存）
   run_stage7.py     ⭐  二期阶段7：反身性（E7.0~E7.4）

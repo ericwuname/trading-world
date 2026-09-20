@@ -1,5 +1,5 @@
 {
-  "next_available": 58,
+  "next_available": 64,
   "history": [
     {
       "ids": [],
@@ -43,6 +43,18 @@
       ],
       "claimed_by": "工作线P-验收标准",
       "claimed_at": "2026-09-20T14:57:31"
+    },
+    {
+      "ids": [
+        58,
+        59,
+        60,
+        61,
+        62,
+        63
+      ],
+      "claimed_by": "工作线S-数据层与MCP",
+      "claimed_at": "2026-09-21T00:53:58"
     }
   ],
   "note": "变异测试编号的权威来源。新增变异体前用 `python scripts/claim_mutation_ids.py --claim N --by <工作线>` 领取；next_available 的初值由 `--init` 从 mutation_check.py 实读推导，**不采用任何文档里预先写死的数字**。"

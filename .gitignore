@@ -4,6 +4,16 @@
 # 一键复现：python scripts/reproduce_all.py
 out/
 
+# ── 行情库（本地缓存，可由 data_cli 重建）───────────────────────
+# candles 是拉取/生成出来的派生物，随用随建。
+# ⚠️ 但**不要**忽略 fetches 账本所依赖的任何东西：
+#    「这份数据是什么时候、用什么参数拿的」这个问题必须事后可答，
+#    所以账本随库一起存在于本地即可 —— 需要长期留存的证据应另行归档。
+# 重建：python scripts/data_cli.py build --inst BTC-USDT-SWAP
+data/market.sqlite
+data/market.sqlite-wal
+data/market.sqlite-shm
+
 # ── Python ──────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
