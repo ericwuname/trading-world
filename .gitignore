@@ -27,3 +27,14 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# ── 密钥（⚠️ 永远不要进仓库）─────────────────────────────────────
+# 本项目的 LLM 通道（Agnes / Gemini / 智谱）与交易所凭证都放在
+# 仓库**外面**（~/.workbuddy/secrets/ 与用户级记忆），这条是兜底：
+# 万一有人在项目里临时建了个 .env / key 文件，误 commit 时能挡住。
+.env
+.env.*
+secrets/
+*.key
+*_key.txt
+credentials.json
