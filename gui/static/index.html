@@ -1,0 +1,1374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>交易世界 · 基于主体建模的人工市场</title>
+<style>
+:root{
+  --bg:#16181d; --panel:#1c1f26; --panel2:#22262f; --panel3:#272c36;
+  --fg:#d8dee9; --fg2:#aab4c4; --muted:#7d8798; --grid:#2c313a; --line:#353b46;
+  --accent:#e06c75; --good:#8fbf6a; --mid:#5aa9e6; --warn:#e0a458; --purple:#b48ead;
+  --radius:10px; --side:322px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--fg); overflow:hidden;
+  font:13.5px/1.6 "Microsoft YaHei","PingFang SC","Hiragino Sans GB",system-ui,-apple-system,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button,select,input,textarea{font:inherit;color:inherit}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#333944;border-radius:6px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:#414957}
+::-webkit-scrollbar-track{background:transparent}
+#app{display:flex;height:100vh;width:100vw}
+
+/* ---------- 左栏 ---------- */
+#side{
+  width:var(--side); flex:0 0 var(--side); background:var(--panel);
+  border-right:1px solid var(--grid); display:flex; flex-direction:column;
+  overflow-y:auto; overflow-x:hidden;
+}
+.brand{padding:16px 16px 12px;border-bottom:1px solid var(--grid)}
+.brand h1{font-size:15.5px;font-weight:600;letter-spacing:.3px;display:flex;align-items:center;gap:7px}
+.brand .dot{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 8px var(--good);flex:0 0 auto}
+.brand .sub{color:var(--muted);font-size:11.5px;margin-top:3px}
+.sec{padding:14px 16px;border-bottom:1px solid var(--grid)}
+.sec h2{font-size:11px;letter-spacing:1.2px;color:var(--muted);text-transform:uppercase;margin-bottom:10px;font-weight:600}
+.field{margin-bottom:11px}
+.field:last-child{margin-bottom:0}
+.field label{display:block;font-size:12px;color:var(--fg2);margin-bottom:5px}
+.field .hint{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.5}
+select,input[type=text],input[type=number],textarea{
+  width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:7px;
+  padding:7px 9px; outline:none; transition:border-color .12s,box-shadow .12s;
+}
+select:focus,input:focus,textarea:focus{border-color:var(--mid);box-shadow:0 0 0 2px rgba(90,169,230,.15)}
+textarea{resize:vertical;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;line-height:1.55}
+.row{display:flex;gap:8px}
+.row>*{flex:1;min-width:0}
+.pills{display:flex;gap:5px;background:var(--panel2);padding:3px;border-radius:8px;border:1px solid var(--line)}
+.pills button{
+  flex:1;background:none;border:none;padding:6px 4px;border-radius:6px;cursor:pointer;
+  color:var(--fg2);font-size:12px;transition:background .12s,color .12s;
+}
+.pills button.on{background:var(--mid);color:#0d1117;font-weight:600}
+.pills button:not(.on):hover{background:var(--panel3);color:var(--fg)}
+.btn{
+  width:100%;padding:10px;border:none;border-radius:8px;cursor:pointer;font-weight:600;
+  background:var(--mid);color:#0d1117;transition:filter .12s,opacity .12s;font-size:13.5px;
+}
+.btn:hover:not(:disabled){filter:brightness(1.1)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.ghost{background:var(--panel3);color:var(--fg);border:1px solid var(--line)}
+.btn.danger{background:var(--accent);color:#150c0d}
+.btn.sm{padding:6px 10px;font-size:12px;width:auto;font-weight:500}
+#prog{display:none;margin-top:10px}
+#prog.on{display:block}
+.bar{height:6px;background:var(--panel3);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--mid),var(--good));width:0;transition:width .25s}
+.bar-txt{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);margin-top:5px;gap:8px}
+.bar-txt span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#logs{margin-top:10px;max-height:150px;overflow-y:auto;background:#14161b;border:1px solid var(--grid);
+  border-radius:7px;padding:8px 10px;font-size:11.5px;color:var(--fg2);
+  font-family:ui-monospace,Consolas,monospace;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+#logs:empty{display:none}
+.chk{display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12.5px;color:var(--fg2);user-select:none}
+.chk input{width:15px;height:15px;accent-color:var(--mid);cursor:pointer}
+
+/* ---------- 主区 ---------- */
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+#tabs{
+  display:flex;gap:2px;padding:0 16px;background:var(--panel);
+  border-bottom:1px solid var(--grid);flex:0 0 auto;
+}
+#tabs button{
+  background:none;border:none;padding:13px 15px 11px;cursor:pointer;color:var(--muted);
+  border-bottom:2px solid transparent;font-size:13.5px;transition:color .12s,border-color .12s;
+}
+#tabs button:hover{color:var(--fg2)}
+#tabs button.on{color:var(--fg);border-bottom-color:var(--mid);font-weight:600}
+#pane{flex:1;overflow-y:auto;padding:18px 20px 60px;min-height:0}
+.tabpane{display:none}
+.tabpane.on{display:block}
+.empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:60vh;color:var(--muted);text-align:center;gap:10px;
+}
+.empty .big{font-size:15px;color:var(--fg2)}
+.empty .tip{font-size:12.5px;max-width:460px;line-height:1.7}
+.card{
+  background:var(--panel);border:1px solid var(--grid);border-radius:var(--radius);
+  padding:14px 16px;margin-bottom:16px;
+}
+.card>h3{font-size:13.5px;font-weight:600;margin-bottom:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card>.desc{color:var(--muted);font-size:12px;margin-bottom:12px;line-height:1.6}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:1180px){.grid2{grid-template-columns:1fr}}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px}
+.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.kpi .k{font-size:11px;color:var(--muted);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .v{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+.kpi .v small{font-size:11.5px;color:var(--muted);font-weight:400;margin-left:3px}
+.kpi.good .v{color:var(--good)} .kpi.warn .v{color:var(--warn)} .kpi.bad .v{color:var(--accent)}
+canvas{display:block;width:100%}
+.chartbox{background:var(--panel);border:1px solid var(--grid);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px}
+.chartbox h4{font-size:13px;font-weight:600;margin-bottom:2px}
+.chartbox .cap{color:var(--muted);font-size:11.5px;margin-bottom:9px;line-height:1.55}
+table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--grid);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{background:var(--panel2);color:var(--fg2);font-weight:600;font-size:11.5px;position:sticky;top:0;z-index:1}
+tbody tr:hover{background:#1f232b}
+td.bad{color:var(--accent)} td.good{color:var(--good)} td.dim{color:var(--muted)}
+.tag{display:inline-block;padding:2px 7px;border-radius:5px;font-size:11px;background:var(--panel3);color:var(--fg2)}
+.tag.good{background:rgba(143,191,106,.16);color:var(--good)}
+.tag.bad{background:rgba(224,108,117,.16);color:var(--accent)}
+.tag.warn{background:rgba(224,164,88,.16);color:var(--warn)}
+.note{background:var(--panel2);border-left:3px solid var(--mid);border-radius:0 8px 8px 0;padding:10px 13px;
+  font-size:12.5px;color:var(--fg2);line-height:1.7;margin:12px 0}
+.note.warn{border-left-color:var(--warn)}
+.note.bad{border-left-color:var(--accent)}
+.note b{color:var(--fg)}
+.spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--mid);
+  border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;color:#9fd0f0;
+  font-family:ui-monospace,Consolas,monospace}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--fg2);margin-top:7px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:0}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <div class="brand">
+      <h1><span class="dot"></span>交易世界</h1>
+      <div class="sub">基于主体建模的人工市场 · 策略实验台</div>
+    </div>
+
+    <div class="sec">
+      <h2>运行配置</h2>
+      <div class="field">
+        <label>运行类型</label>
+        <div class="pills" id="kindPills">
+          <button data-kind="strategy" class="on">策略实验</button>
+          <button data-kind="market">纯市场</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>场景</label>
+        <select id="scenario"></select>
+        <div class="hint" id="scenarioHint"></div>
+      </div>
+      <div class="row field">
+        <div><label>种子</label><input type="number" id="seed" value="20260917"></div>
+        <div><label>观测 tick</label><input type="number" id="ticks" value="6000" min="50"></div>
+      </div>
+      <div class="field">
+        <label>预热 tick（跑完再注入策略）</label>
+        <input type="number" id="warmup" value="4000" min="0">
+        <div class="hint">预热期让市场先形成稳定的盘口。所有策略共享同一段预热行情，起点一致。</div>
+      </div>
+    </div>
+
+    <div class="sec" id="strategySec">
+      <h2>策略</h2>
+      <div class="field">
+        <label>内置策略</label>
+        <select id="strategy"></select>
+        <div class="hint" id="strategyHint"></div>
+      </div>
+      <div class="field">
+        <label>参数覆盖（JSON，留空用默认）</label>
+        <input type="text" id="params" placeholder='{"half_spread_bp": 8}'>
+      </div>
+      <div class="field">
+        <label class="chk"><input type="checkbox" id="useCode"> 用自定义代码（覆盖上面的选择）</label>
+      </div>
+      <div class="field" id="codeWrap" style="display:none">
+        <label>策略代码</label>
+        <textarea id="code" rows="14" spellcheck="false"></textarea>
+        <div class="hint" id="codeHint"></div>
+      </div>
+      <div class="row field">
+        <div><label>初始现金</label><input type="number" id="cash" value="18000000"></div>
+        <div><label>初始持仓</label><input type="number" id="inv" value="0" step="1"></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <button class="btn" id="run">▶　运行</button>
+      <div id="prog">
+        <div class="bar"><i id="barFill"></i></div>
+        <div class="bar-txt"><span id="phase">…</span><span id="pct">0%</span></div>
+        <button class="btn danger sm" id="cancel" style="margin-top:8px;width:100%">取消</button>
+      </div>
+      <div id="logs"></div>
+    </div>
+
+    <div class="sec">
+      <h2>批量对照</h2>
+      <div class="field">
+        <label>场景（可多选）</label>
+        <div id="labScen"></div>
+      </div>
+      <div class="field">
+        <label>种子数</label>
+        <input type="number" id="labSeeds" value="3" min="1" max="8">
+      </div>
+      <div class="row field">
+        <div><label>每次 tick</label><input type="number" id="labTicks" value="4000" min="100"></div>
+        <div><label>预热</label><input type="number" id="labWarmup" value="3000" min="0"></div>
+      </div>
+      <button class="btn ghost" id="runLab">跑批量对照（全部内置策略 × 场景 × 种子）</button>
+      <div class="hint" style="margin-top:7px">
+        每次都自动带上 <code>noop</code> 基准（它的 PnL 必须恰好为 0，是口径自检）。<br>
+        规模护栏按 <b>总 tick·次</b> 算（上限 300 万）——20 次 × 5 万 tick
+        比 280 次 × 1000 tick 贵得多，只卡组合数是拦不住的。
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2>数据</h2>
+      <div class="field">
+        <label>真实数据集</label>
+        <select id="realSel"></select>
+      </div>
+      <button class="btn ghost sm" id="loadReal" style="width:100%">载入真实行情并对比</button>
+      <div class="hint" style="margin-top:7px" id="datasrc"></div>
+    </div>
+  </aside>
+
+  <main>
+    <nav id="tabs">
+      <button data-tab="overview" class="on">总览</button>
+      <button data-tab="charts">图表</button>
+      <button data-tab="metrics">指标</button>
+      <button data-tab="strategy">策略表现</button>
+      <button data-tab="compare">对照</button>
+      <button data-tab="real">真实比对</button>
+    </nav>
+    <div id="pane">
+      <div class="tabpane on" id="tab-overview"></div>
+      <div class="tabpane" id="tab-charts"></div>
+      <div class="tabpane" id="tab-metrics"></div>
+      <div class="tabpane" id="tab-strategy"></div>
+      <div class="tabpane" id="tab-compare"></div>
+      <div class="tabpane" id="tab-real"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   0. 基础工具
+   ===================================================================== */
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const el = (tag, attrs, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") n.className = v;
+    else if (k === "html") n.innerHTML = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) n.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) if (c != null) n.append(c.nodeType ? c : String(c));
+  return n;
+};
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function fmt(v, nd) {
+  if (v === null || v === undefined || v === "") return "—";
+  let x = Number(v);
+  if (!isFinite(x)) return "—";
+  // -0 是合法的浮点值，但显示成 "-0" 会让人以为出了负值。归一到 0。
+  if (Object.is(x, -0) || Math.abs(x) < 1e-12) x = 0;
+  if (nd === 0) return x.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+  return x.toLocaleString("zh-CN", { minimumFractionDigits: nd, maximumFractionDigits: nd });
+}
+function fmtSigned(v, nd) {
+  const s = fmt(v, nd);
+  return (Number(v) > 0 ? "+" : "") + s;
+}
+function signedClass(v) {
+  const x = Number(v);
+  if (!isFinite(x) || x === 0) return "";
+  return x > 0 ? "good" : "bad";
+}
+function metricRow(v, nd) {
+  const s = fmtSigned(v, nd === undefined ? 2 : nd);
+  return el("td", { class: signedClass(v) }, s);
+}
+
+async function api(path, opts) {
+  const o = Object.assign({ headers: {} }, opts || {});
+  o.headers["X-TW-Token"] = TOKEN;
+  if (o.body && typeof o.body !== "string") {
+    o.headers["Content-Type"] = "application/json";
+    o.body = JSON.stringify(o.body);
+  }
+  const r = await fetch(path, o);
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* 非 JSON 响应 */ }
+  if (!r.ok) throw new Error((data && data.error) || ("HTTP " + r.status));
+  return data;
+}
+
+/* =====================================================================
+   1. 图表：手写 canvas。不引第三方库（离线可用、无构建步骤）
+   ===================================================================== */
+const CHARTS = new Map();   // canvasId -> {spec, hover}
+function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+function niceTicks(lo, hi, n) {
+  if (!isFinite(lo) || !isFinite(hi)) return [0];
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const span = hi - lo;
+  const step0 = span / Math.max(2, n);
+  const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const norm = step0 / mag;
+  const step = mag * (norm >= 5 ? 5 : norm >= 2 ? 2 : 1);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + step * 1e-6; v += step) out.push(v);
+  return out;
+}
+function tickLabel(v, step) {
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toFixed(a % 1e6 ? 1 : 0) + "M";
+  if (a >= 1e4) return (v / 1e3).toFixed(0) + "k";
+  if (step < 0.01) return v.toFixed(3);
+  if (step < 1) return v.toFixed(2);
+  return String(Math.round(v));
+}
+
+/** 通用折线图。series: [{name,color,xs,ys,width,dash,fill}] */
+function lineChart(cv, spec) {
+  const box = cv.parentElement;
+  const W = cv.clientWidth || box.clientWidth || 640;
+  const H = spec.height || 210;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  cv.style.height = H + "px";
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const pad = { l: spec.padL || 62, r: spec.padR || 12, t: spec.padT || 10, b: spec.padB || 26 };
+  const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b;
+  const S = (spec.series || []).filter((s) => s && s.ys && s.ys.length);
+  if (!S.length || plotW < 20 || plotH < 20) {
+    g.fillStyle = css("--muted"); g.font = "12px sans-serif"; g.textAlign = "center";
+    g.fillText("无数据", W / 2, H / 2);
+    return;
+  }
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const s of S) {
+    for (let i = 0; i < s.ys.length; i++) {
+      const y = s.ys[i], x = s.xs ? s.xs[i] : i;
+      if (y == null || !isFinite(y)) continue;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  if (!isFinite(x0) || !isFinite(y0)) { return; }
+  if (spec.yZero) { y0 = Math.min(y0, 0); y1 = Math.max(y1, 0); }
+  const yp = (y1 - y0) * 0.08 || Math.abs(y1) * 0.08 || 1;
+  y0 -= yp; y1 += yp;
+  const X = (v) => pad.l + (v - x0) / (x1 - x0 || 1) * plotW;
+  const Y = (v) => pad.t + plotH - (v - y0) / (y1 - y0 || 1) * plotH;
+
+  // 背景带（例如清算时刻）
+  for (const b of (spec.bands || [])) {
+    g.fillStyle = b.color || "rgba(224,108,117,.10)";
+    const bx0 = X(b.x0), bx1 = X(b.x1);
+    g.fillRect(bx0, pad.t, Math.max(1, bx1 - bx0), plotH);
+  }
+  // 网格
+  const yts = niceTicks(y0, y1, 5), ystep = yts.length > 1 ? yts[1] - yts[0] : 1;
+  g.strokeStyle = css("--grid"); g.lineWidth = 1; g.font = "11px ui-monospace,Consolas,monospace";
+  g.fillStyle = css("--muted"); g.textAlign = "right"; g.textBaseline = "middle";
+  for (const t of yts) {
+    const y = Y(t); if (y < pad.t - 1 || y > pad.t + plotH + 1) continue;
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W - pad.r, y); g.stroke();
+    g.fillText(spec.yFmt ? spec.yFmt(t) : tickLabel(t, ystep), pad.l - 6, y);
+  }
+  const xts = niceTicks(x0, x1, 6), xstep = xts.length > 1 ? xts[1] - xts[0] : 1;
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (const t of xts) {
+    const x = X(t); if (x < pad.l - 1 || x > W - pad.r + 1) continue;
+    g.beginPath(); g.moveTo(x, pad.t); g.lineTo(x, pad.t + plotH); g.stroke();
+    g.fillText(spec.xFmt ? spec.xFmt(t) : tickLabel(t, xstep), x, pad.t + plotH + 6);
+  }
+  // 零线
+  if (spec.yZero && y0 < 0 && y1 > 0) {
+    g.strokeStyle = css("--line"); g.setLineDash([4, 3]);
+    g.beginPath(); g.moveTo(pad.l, Y(0)); g.lineTo(W - pad.r, Y(0)); g.stroke();
+    g.setLineDash([]);
+  }
+  // 数据线
+  for (const s of S) {
+    const n = s.ys.length;
+    if (s.fill) {
+      g.beginPath(); let started = false;
+      for (let i = 0; i < n; i++) {
+        const y = s.ys[i]; if (y == null || !isFinite(y)) continue;
+        const x = s.xs ? s.xs[i] : i;
+        if (!started) { g.moveTo(X(x), Y(0)); started = true; }
+        g.lineTo(X(x), Y(y));
+      }
+      if (started && n) {
+        const lx = s.xs ? s.xs[n - 1] : n - 1;
+        g.lineTo(X(lx), Y(0)); g.closePath();
+        g.fillStyle = s.color + "22"; g.fill();
+      }
+    }
+    g.beginPath(); g.strokeStyle = s.color; g.lineWidth = s.width || 1.4;
+    g.lineJoin = "round";
+    if (s.dash) g.setLineDash(s.dash);
+    let started = false;
+    for (let i = 0; i < n; i++) {
+      const y = s.ys[i]; if (y == null || !isFinite(y)) { started = false; continue; }
+      const x = s.xs ? s.xs[i] : i;
+      if (!started) { g.moveTo(X(x), Y(y)); started = true; } else g.lineTo(X(x), Y(y));
+    }
+    g.stroke(); g.setLineDash([]);
+  }
+  // 水平参考线
+  for (const r of (spec.hlines || [])) {
+    const y = Y(r.v); if (y < pad.t || y > pad.t + plotH) continue;
+    g.strokeStyle = r.color || css("--accent"); g.lineWidth = 1;
+    g.setLineDash(r.dash || [5, 4]);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W - pad.r, y); g.stroke();
+    g.setLineDash([]);
+    if (r.label) {
+      g.fillStyle = r.color || css("--accent"); g.font = "10.5px sans-serif";
+      g.textAlign = "left"; g.textBaseline = "bottom";
+      g.fillText(r.label, pad.l + 4, y - 2);
+    }
+  }
+  // 十字光标
+  const hv = CHARTS.get(cv.id);
+  if (hv && hv.idx >= 0 && hv.idx < (S[0].xs ? S[0].xs.length : S[0].ys.length)) {
+    const hx = X(S[0].xs ? S[0].xs[hv.idx] : hv.idx);
+    g.strokeStyle = css("--muted"); g.globalAlpha = .55; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(hx, pad.t); g.lineTo(hx, pad.t + plotH); g.stroke();
+    g.globalAlpha = 1;
+    const lines = [];
+    for (const s of S) {
+      const y = s.ys[hv.idx]; if (y == null || !isFinite(y)) continue;
+      g.fillStyle = s.color;
+      g.beginPath(); g.arc(hx, Y(y), 3, 0, 6.284); g.fill();
+      lines.push([s.name, (spec.yFmt ? spec.yFmt(y) : fmt(y, 2)), s.color]);
+    }
+    if (lines.length) {
+      const txts = lines.map((l) => l[0] + " " + l[1]);
+      g.font = "11px ui-monospace,Consolas,monospace";
+      const w = Math.max(...txts.map((t) => g.measureText(t).width)) + 14;
+      const h = txts.length * 15 + 8;
+      let bx = hx + 10; if (bx + w > W - pad.r) bx = hx - w - 10;
+      const by = Math.min(Math.max(pad.t + 4, Y(S[0].ys[hv.idx] || 0) - h / 2), pad.t + plotH - h);
+      g.fillStyle = "rgba(20,23,28,.94)"; g.strokeStyle = css("--line");
+      g.beginPath(); g.roundRect(bx, by, w, h, 6); g.fill(); g.stroke();
+      g.textAlign = "left"; g.textBaseline = "top";
+      txts.forEach((t, i) => { g.fillStyle = lines[i][2]; g.fillText(t, bx + 7, by + 4 + i * 15); });
+    }
+  }
+}
+function bindHover(cv) {
+  cv.addEventListener("mousemove", (e) => {
+    const sp = CHARTS.get(cv.id); if (!sp || !sp.spec.series || !sp.spec.series[0]) return;
+    const r = cv.getBoundingClientRect();
+    const s0 = sp.spec.series.find((s) => s && s.ys && s.ys.length); if (!s0) return;
+    const xs = s0.xs || s0.ys.map((_, i) => i);
+    const padL = sp.spec.padL || 62, padR = sp.spec.padR || 12;
+    const plotW = r.width - padL - padR;
+    const x0 = xs[0], x1 = xs[xs.length - 1];
+    const vx = x0 + (e.clientX - r.left - padL) / plotW * (x1 - x0);
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < xs.length; i++) { const d = Math.abs(xs[i] - vx); if (d < bd) { bd = d; best = i; } }
+    const h = CHARTS.get(cv.id); h.idx = best;
+    lineChart(cv, sp.spec);
+  });
+  cv.addEventListener("mouseleave", () => {
+    const sp = CHARTS.get(cv.id); if (!sp) return;
+    sp.idx = -1; lineChart(cv, sp.spec);
+  });
+}
+function drawChart(cvId, spec) {
+  const cv = document.getElementById(cvId); if (!cv) return;
+  const prev = CHARTS.get(cvId);
+  CHARTS.set(cvId, { spec, idx: prev ? prev.idx : -1 });
+  if (!cv.dataset.hover) { bindHover(cv); cv.dataset.hover = "1"; }
+  lineChart(cv, spec);
+}
+/** 直方图 + 正态叠加 */
+function drawHist(cvId, hist, spec) {
+  const cv = document.getElementById(cvId); if (!cv) return;
+  const W = cv.clientWidth || 560, H = spec.height || 200, dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  if (!hist) return;
+  const pad = { l: 52, r: 12, t: 10, b: 26 };
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const n = hist.centers.length;
+  const ymax = Math.max(...hist.count, ...hist.normal.filter((v) => v != null)) * 1.06 || 1;
+  const bx = (i) => pad.l + i / n * pw, bw = pw / n;
+  const YV = (v) => pad.t + ph - v / ymax * ph;
+  g.strokeStyle = css("--grid");
+  const yts = niceTicks(0, ymax, 4), ystep = yts.length > 1 ? yts[1] - yts[0] : 1;
+  g.font = "11px ui-monospace,Consolas,monospace"; g.fillStyle = css("--muted");
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (const t of yts) {
+    const y = YV(t); g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W - pad.r, y); g.stroke();
+    g.fillText(tickLabel(t, ystep), pad.l - 6, y);
+  }
+  for (let i = 0; i < n; i++) {
+    const h = hist.count[i] / ymax * ph;
+    g.fillStyle = "rgba(90,169,230,.55)";
+    g.fillRect(bx(i) + 0.4, pad.t + ph - h, Math.max(1, bw - 0.8), h);
+  }
+  g.beginPath(); g.strokeStyle = css("--accent"); g.lineWidth = 1.6;
+  for (let i = 0; i < n; i++) {
+    const v = hist.normal[i]; if (v == null) continue;
+    const x = bx(i) + bw / 2, y = YV(v);
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  }
+  g.stroke();
+  g.fillStyle = css("--muted"); g.textAlign = "center"; g.textBaseline = "top";
+  for (const t of niceTicks(-hist.clip_bp, hist.clip_bp, 5))
+    g.fillText(tickLabel(t, 1) + "", pad.l + (t + hist.clip_bp) / (2 * hist.clip_bp) * pw, pad.t + ph + 6);
+}
+/** 简单柱状图 */
+function drawBars(cvId, labels, values, spec) {
+  const cv = document.getElementById(cvId); if (!cv) return;
+  const W = cv.clientWidth || 560, H = spec.height || 190, dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + "px";
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const pad = { l: 62, r: 12, t: 10, b: 30 };
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const vals = values.map((v) => (isFinite(v) ? v : 0));
+  const y0 = Math.min(0, ...vals), y1 = Math.max(0, ...vals);
+  const span = (y1 - y0) || 1;
+  const YV = (v) => pad.t + ph - (v - y0) / span * ph;
+  const n = vals.length, bw = pw / Math.max(1, n);
+  g.strokeStyle = css("--grid"); g.font = "11px ui-monospace,Consolas,monospace";
+  g.fillStyle = css("--muted"); g.textAlign = "right"; g.textBaseline = "middle";
+  for (const t of niceTicks(y0, y1, 4)) {
+    const y = YV(t); g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W - pad.r, y); g.stroke();
+    g.fillText(tickLabel(t, 1), pad.l - 6, y);
+  }
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (let i = 0; i < n; i++) {
+    const y = YV(vals[i]), h = Math.abs(YV(0) - y), top = Math.min(y, YV(0));
+    g.fillStyle = vals[i] >= 0 ? (spec.posColor || css("--mid")) : (spec.negColor || css("--accent"));
+    g.fillRect(pad.l + i * bw + bw * 0.18, top, bw * 0.64, Math.max(1, h));
+    g.fillStyle = css("--fg2"); g.font = "10.5px sans-serif";
+    g.fillText(labels[i], pad.l + i * bw + bw / 2, pad.t + ph + 7);
+  }
+  const Y0 = YV(0);
+  g.strokeStyle = css("--line"); g.beginPath(); g.moveTo(pad.l, Y0); g.lineTo(W - pad.r, Y0); g.stroke();
+}
+
+/* =====================================================================
+   2. 状态
+   ===================================================================== */
+const State = {
+  meta: null,
+  kind: "strategy",
+  job: null,          // 当前作业的 public 对象
+  series: null,
+  poll: null,
+  history: [],        // 本次会话跑过的作业（含结果，用于对照）
+  real: null,
+  lab: null,
+  selected: new Set(),// 对照页勾选的作业 id
+  cfg: {},
+};
+
+/* =====================================================================
+   3. 侧栏
+   ===================================================================== */
+function fillSidebar(meta) {
+  const sc = $("#scenario");
+  sc.innerHTML = "";
+  for (const s of meta.scenarios) sc.append(el("option", { value: s.name }, s.name));
+  sc.value = meta.defaults.scenario;
+  sc.onchange = () => { renderScenarioHint(); syncScenarioDefaults(); };
+  renderScenarioHint();
+
+  const st = $("#strategy");
+  st.innerHTML = "";
+  for (const s of meta.strategies) st.append(el("option", { value: s.name }, s.name));
+  st.value = meta.defaults.strategy;
+  st.onchange = renderStrategyHint;
+  renderStrategyHint();
+
+  const rs = $("#realSel");
+  rs.innerHTML = "";
+  for (const k of (meta.real_symbols || [])) rs.append(el("option", { value: k }, k));
+  $("#datasrc").textContent = "真实数据来自既有交付包 CSV（不重新下载，保证口径一致）。";
+
+  const ls = $("#labScen");
+  ls.innerHTML = "";
+  ls.style.cssText = "display:flex;flex-direction:column;gap:6px";
+  for (const s of meta.scenarios) {
+    const id = "labsc_" + s.name;
+    const lab = el("label", { class: "chk" },
+      el("input", { type: "checkbox", id, value: s.name }),
+      el("span", {}, s.name));
+    if (["normal", "stressed"].includes(s.name)) lab.querySelector("input").checked = true;
+    ls.append(lab);
+  }
+
+  $("#seed").value = meta.defaults.seed;
+  $("#ticks").value = meta.defaults.ticks;
+  $("#labSeeds").value = meta.defaults.lab_seeds;
+  $("#labTicks").value = meta.defaults.lab_ticks;
+  syncScenarioDefaults();
+  fillCodeTemplate();
+}
+function renderScenarioHint() {
+  const s = State.meta.scenarios.find((x) => x.name === $("#scenario").value);
+  $("#scenarioHint").textContent = s ? s.intent : "";
+}
+function syncScenarioDefaults() {
+  const s = State.meta.scenarios.find((x) => x.name === $("#scenario").value);
+  if (!s) return;
+  $("#warmup").value = s.warmup;
+  $("#labWarmup").value = Math.min(s.warmup, 3000);
+}
+function renderStrategyHint() {
+  const s = State.meta.strategies.find((x) => x.name === $("#strategy").value);
+  if (!s) return;
+  const first = (s.doc || "").split("\n")[0] || s.cls;
+  $("#strategyHint").textContent = first + "　默认参数 " + JSON.stringify(s.params);
+}
+function fillCodeTemplate() {
+  $("#code").value =
+`from tw.strategy import Strategy
+
+class MyMaker(Strategy):
+    """在中间价两侧挂固定价差的双边单。改参数后直接点「运行」。"""
+
+    def __init__(self, *args, half_spread_bp=12.0, qty=2.0, **kw):
+        super().__init__(*args, **kw)
+        self.half = half_spread_bp
+        self.qty = qty
+
+    def on_tick(self, ctx):
+        mid = ctx.mid
+        if mid is None:
+            return None
+        ctx.cancel_all()                 # 每 tick 撤旧挂新
+        bid = mid * (1 - self.half / 1e4)
+        ask = mid * (1 + self.half / 1e4)
+        return ctx.quote(bid, ask, self.qty)
+`;
+  $("#codeHint").innerHTML =
+    "⚠️ 这段代码会在<b>你的本机直接执行</b>（没有沙箱）。" +
+    "不要运行来源不明的策略代码。<br>可用的 <code>ctx</code>：" +
+    "<code>mid / best_bid / best_ask / spread_bp / fundamental / momentum(n) / " +
+    "cash / inventory / available_cash / buy() / sell() / market_buy() / market_sell() / " +
+    "limit_at() / quote() / cancel_all()</code>";
+}
+
+/* =====================================================================
+   4. 运行与轮询
+   ===================================================================== */
+function collectSpec(kind) {
+  const spec = {
+    kind,
+    scenario: $("#scenario").value,
+    seed: Number($("#seed").value) || 0,
+    ticks: Number($("#ticks").value) || 1000,
+    warmup: Number($("#warmup").value) || 0,
+  };
+  if (kind === "strategy") {
+    spec.cash = Number($("#cash").value) || 0;
+    spec.inventory = Number($("#inv").value) || 0;
+    if ($("#useCode").checked) {
+      spec.strategy = "custom";
+      spec.code = $("#code").value;
+    } else {
+      spec.strategy = $("#strategy").value;
+      const raw = $("#params").value.trim();
+      if (raw) {
+        try { spec.params = JSON.parse(raw); }
+        catch (e) { throw new Error("参数覆盖不是合法 JSON：" + e.message); }
+      }
+    }
+  }
+  return spec;
+}
+function setBusy(on) {
+  $("#run").disabled = on; $("#runLab").disabled = on;
+  $("#prog").classList.toggle("on", on);
+  if (!on) { $("#barFill").style.width = "0%"; }
+}
+function logLine(t) {
+  const box = $("#logs");
+  box.append(el("div", {}, t));
+  while (box.childNodes.length > 200) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function startRun(kind) {
+  let spec;
+  try { spec = collectSpec(kind); } catch (e) { alert(e.message); return; }
+  $("#logs").innerHTML = "";
+  setBusy(true);
+  try {
+    const r = await api("/api/run", { method: "POST", body: spec });
+    State.job = { id: r.job_id, kind };
+    logLine("已提交作业 " + r.job_id);
+    pollJob(r.job_id);
+  } catch (e) {
+    setBusy(false);
+    alert("提交失败：" + e.message);
+    logLine("❌ " + e.message);
+  }
+}
+function pollJob(id) {
+  if (State.poll) clearInterval(State.poll);
+  State.poll = setInterval(async () => {
+    let j;
+    try { j = await api("/api/job/" + id); }
+    catch (e) { clearInterval(State.poll); setBusy(false); logLine("❌ 查询失败：" + e.message); return; }
+    State.job = j;
+    const p = Math.round((j.progress || 0) * 100);
+    $("#barFill").style.width = p + "%";
+    $("#pct").textContent = p + "%";
+    $("#phase").textContent = j.phase || "";
+    if (j.log && j.log.length) {
+      const box = $("#logs");
+      if (box.childNodes.length !== j.log.length) {
+        box.innerHTML = ""; for (const l of j.log) box.append(el("div", {}, l));
+        box.scrollTop = box.scrollHeight;
+      }
+    }
+    if (j.state === "done" || j.state === "error" || j.state === "cancelled") {
+      clearInterval(State.poll); State.poll = null; setBusy(false);
+      if (j.state === "error") {
+        logLine("❌ " + j.error);
+        alert("作业失败：" + j.error);
+        return;
+      }
+      if (j.state === "cancelled") { logLine("已取消"); return; }
+      await onDone(j);
+    }
+  }, 320);
+}
+/** 把一个已完成（或正在跑）的作业挂到界面上。 */
+async function attachJob(j) {
+  State.job = j;
+  if (j.state === "done") {
+    if (j.kind === "lab") {
+      State.lab = j.result;
+    } else {
+      try {
+        const s = await api("/api/job/" + j.id + "/series");
+        State.series = s.ready ? s.series : null;
+      } catch (e) { State.series = null; }
+      State.history.unshift(j);
+      if (State.history.length > 25) State.history.pop();
+    }
+    switchTab("overview");
+    renderAll();
+  } else {
+    pollJob(j.id);
+  }
+}
+async function onDone(j) {
+  await attachJob(j);
+}
+/* URL 里带 job=<id>：直接打开某次已完成的结果。
+   配合上面的 autorun，可以把一次实验做成"点开就是同一张图"的链接。 */
+async function maybeLoadJob() {
+  const id = new URLSearchParams(location.search).get("job");
+  if (!id) return false;
+  try {
+    const j = await api("/api/job/" + id);
+    logLine("载入作业 " + id + "（" + j.state + "）");
+    await attachJob(j);
+    return true;
+  } catch (e) {
+    alert("载入作业失败：" + e.message);
+    return false;
+  }
+}
+
+/* =====================================================================
+   5. 各视图渲染
+   ===================================================================== */
+function switchTab(name) {
+  $$("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  $$(".tabpane").forEach((p) => p.classList.toggle("on", p.id === "tab-" + name));
+  renderAll();
+}
+function renderAll() {
+  renderOverview(); renderCharts(); renderMetrics();
+  renderStrategyTab(); renderCompare(); renderReal();
+}
+function emptyBox(title, tips) {
+  return el("div", { class: "empty" },
+    el("div", { class: "big" }, title),
+    ...(tips || []).map((t) => el("div", { class: "tip", html: t })));
+}
+function kpi(label, value, unit, cls) {
+  return el("div", { class: "kpi" + (cls ? " " + cls : "") },
+    el("div", { class: "k", title: label }, label),
+    el("div", { class: "v" }, String(value), unit ? el("small", {}, unit) : null));
+}
+function card(title, desc, ...body) {
+  return el("div", { class: "card" }, el("h3", {}, title),
+    desc ? el("div", { class: "desc", html: desc }) : null, ...body);
+}
+function chartBox(id, title, cap, h) {
+  return el("div", { class: "chartbox" }, el("h4", {}, title),
+    cap ? el("div", { class: "cap", html: cap }) : null,
+    el("canvas", { id }));
+}
+function tbl(headers, rows, cls) {
+  const t = el("table", { class: cls || "" });
+  t.append(el("thead", {}, el("tr", {}, ...headers.map((h) => el("th", {}, h)))));
+  t.append(el("tbody", {}, ...rows));
+  return t;
+}
+
+/* ---- 总览 ---- */
+function renderOverview() {
+  const box = $("#tab-overview");
+  box.innerHTML = "";
+  const j = State.job;
+  if (!j || !j.result) {
+    box.append(emptyBox("还没有结果", [
+      "左侧选好场景与策略，点 <b>▶ 运行</b>。",
+      "「纯市场」只跑市场本身，看它的统计特征像不像真实加密市场。",
+      "「策略实验」会在预热之后把你的策略放进市场，并给出成交质量归因。",
+    ]));
+    return;
+  }
+  const r = j.result;
+  if (r.kind === "market") {
+    box.append(card("市场概览",
+      `场景 <b>${esc(r.scenario)}</b>　种子 ${r.seed}　预热 ${fmt(r.warmup, 0)} + 观测 ${fmt(r.ticks, 0)} tick　` +
+      `${fmt(r.n_agents, 0)} 个主体　用时 ${fmt(r.wall_sec, 1)}s　` +
+      (r.health_ok ? '<span class="tag good">体检通过</span>' : '<span class="tag bad">体检未过</span>'),
+      el("div", { class: "kpis" },
+        kpi("σ / tick", fmt(r.market.sigma_bp, 1), "bp"),
+        kpi("超额峰度", fmt(r.market.excess_kurtosis, 2), "", Number(r.market.excess_kurtosis) > 5 ? "good" : "warn"),
+        kpi("|r| ACF(1)", fmt(r.market.acf_abs_lag1, 3), "", Number(r.market.acf_abs_lag1) > 0.15 ? "good" : "warn"),
+        kpi("显著 |r| 滞后", fmt(r.market.n_sig_lags_abs, 0) + " / 20", "",
+          Number(r.market.n_sig_lags_abs) >= 15 ? "good" : "warn"),
+        kpi("左尾 Hill α", fmt(r.market.hill_alpha_left, 2), "", Number(r.market.hill_alpha_left) < 3.5 ? "good" : "warn"),
+        kpi("平均价差", fmt(r.structure.spread_bp_mean, 2), "bp"),
+        kpi("平均深度", fmt(r.structure.depth_total_mean, 1), "手"),
+        kpi("成交 / tick", fmt(r.structure.trades_per_tick, 1)),
+      ),
+      !r.health_ok ? el("div", { class: "note bad", html: "<b>体检未过：</b>" + esc((r.health_problems || []).join("；")) }) : null,
+      el("div", { class: "note", html:
+        "<b>怎么读：</b>右边一列是真实 BTC 的对应值。<b>数量级</b>接近就是成功——" +
+        "蓝图的判据是统计特征的量级逼近，不要求逐笔吻合。<b>峰度</b>要远大于 0、" +
+        "<b>|r| ACF</b> 要明显为正且多个滞后显著、<b>Hill α</b> 要小于 3.5。" +
+        "这些是「真实市场指纹」，随机游走全都不会满足。" })));
+  } else {
+    const e = r.exec || {};
+    const cap = e.capture_bp || {};
+    const d20 = e.drift_20_bp || {};
+    const d1 = e.drift_1_bp || {};
+    const errTag = r.strategy_errors
+      ? `<span class="tag bad">策略抛了 ${r.strategy_errors} 次异常</span>`
+      : '<span class="tag good">策略无异常</span>';
+    box.append(card("策略概览",
+      `策略 <b>${esc(r.strategy_label)}</b>　场景 <b>${esc(r.scenario)}</b>　种子 ${r.seed}　` +
+      `观测 ${fmt(r.ticks, 0)} tick（另有预热 ${fmt(r.warmup, 0)}）　用时 ${fmt(r.wall_sec, 1)}s　${errTag}`,
+      r.strategy_errors ? el("div", { class: "note bad", html: "<b>策略异常：</b>" + esc(r.strategy_first_error) }) : null,
+      el("div", { class: "kpis" },
+        kpi("成交笔数", fmt(e.n_fills, 0)),
+        kpi("被动占比", fmt((e.maker_volume_frac || 0) * 100, 1), "%"),
+        kpi("价差捕获", fmtSigned(cap.mean, 2), "bp", signedClass(cap.mean)),
+        kpi("漂移 h20", fmtSigned(d20.mean, 2), "bp", signedClass(d20.mean)),
+        kpi("h20 的 t", fmt(d20.t, 2), "", Math.abs(d20.t) >= 2 ? "warn" : ""),
+        kpi("实现 h20", fmtSigned(e.realized_20_bp && e.realized_20_bp.mean, 2), "bp",
+          signedClass(e.realized_20_bp && e.realized_20_bp.mean)),
+        kpi("PnL 合计", fmt(e.pnl_total_from_equity, 0)),
+        kpi("最大回撤", fmt(e.max_dd, 0), "", "bad"),
+      ),
+      el("div", { class: "note", html:
+        "<b>三个数一起看才有意义：</b><br>" +
+        "① <b>价差捕获</b>：成交瞬间相对中间价的优势（被动挂单为正）。<br>" +
+        "② <b>漂移 h20</b>：成交后价格往哪走。<b>负值 = 逆向选择</b>（接了有毒的单）；" +
+        "括号里是 t 值，<b>|t| &lt; 2 就当噪声</b>，别解读。<br>" +
+        "③ <b>实现 h20 = ① + ②</b>：做市类策略能不能赚钱，就看它稳不稳定为正。" }),
+    ));
+    box.append(card("PnL 分解：钱是从哪来的",
+      "三项之和<b>精确等于</b>权益变化（有测试保证），所以「钱从哪来」没有含糊空间。",
+      el("div", { class: "kpis" },
+        kpi("价差捕获（本事）", fmt(e.pnl_capture, 0), "", signedClass(e.pnl_capture)),
+        kpi("库存变动（行情）", fmt(e.pnl_inventory, 0), "", signedClass(e.pnl_inventory)),
+        kpi("底仓重估（行情）", fmt(e.pnl_initial_mark, 0), "", signedClass(e.pnl_initial_mark)),
+        kpi("=∑ 合计", fmt(e.pnl_total_from_equity, 0), "", signedClass(e.pnl_total_from_equity)),
+      ),
+      el("div", { class: "note warn", html:
+        "<b>别把「库存变动」与「底仓重估」当成绩效。</b>一个<b>完全不交易</b>的账户" +
+        "也会有底仓重估项。实测过一例：TWAP 执行策略合计赚了 14.98 万，其中" +
+        "「价差捕获」只有 <b>−1,699</b>——剩下全是建仓期间市场涨了。" +
+        "只看合计会把平庸的执行算法看成优秀策略。" }),
+    ));
+  }
+  box.append(historyCard());
+}
+function historyCard() {
+  const rows = State.history.map((j) => {
+    const r = j.result, e = r.exec || {};
+    return el("tr", {},
+      el("td", {}, el("span", { class: "tag" }, j.kind === "market" ? "市场" : "策略")),
+      el("td", {}, esc(r.strategy_label || r.scenario)),
+      el("td", {}, esc(r.scenario)),
+      el("td", {}, String(r.seed)),
+      el("td", {}, fmt(e.n_fills || r.structure?.n_trades, 0)),
+      metricRow(r.kind === "strategy" ? (e.pnl_total_from_equity || 0) : r.market?.excess_kurtosis, 2),
+      el("td", {}, el("a", { href: "/api/export/" + j.id + ".csv?token=" + encodeURIComponent(TOKEN),
+        style: "color:var(--mid)" }, "CSV")),
+    );
+  });
+  return card("本次会话跑过的", "点「对照」标签可以把多次运行并排比较。",
+    rows.length ? tbl(["类型", "策略/场景", "场景", "种子", "成交", "PnL / 峰度", ""], rows)
+                : el("div", { class: "desc" }, "还没有运行记录。"));
+}
+
+/* ---- 图表 ---- */
+function renderCharts() {
+  const box = $("#tab-charts");
+  box.innerHTML = "";
+  const j = State.job, r = j && j.result, s = State.series;
+  if (!r || !s) { box.append(emptyBox("还没有时序数据", ["先跑一次。" ])); return; }
+  const hasStrategy = r.kind === "strategy";
+  const pnl = s.pnl_curve || null;
+
+  box.append(chartBox("c_price", "中间价与基本面锚",
+    `纵轴是价格。<b>蓝线</b>=中间价，<b>橙线</b>=基本面锚（市场内生的"真值"）。` +
+    `两者若长期大幅分离，说明价格被订单流推离了锚。` +
+    (r.kind === "market" ? `清算类场景会在指定 tick 施加冲击，见下方价差图的高亮带。` : ""),
+    230));
+  box.append(chartBox("c_pnl", "策略权益曲线（相对起点）",
+    hasStrategy ? "这是策略自己的盈亏路径（已扣除起始权益）。<b>形状比终值更重要</b>：单调向上的直线不存在，中间的回撤才是风险。"
+                : "纯市场运行没有策略权益曲线。", 190));
+  box.append(chartBox("c_spread", "买卖价差 (bp) 与盘口深度",
+    "<b>蓝线</b>=价差(bp，左轴)，<b>绿线</b>=买卖总深度(手，右轴同图按比例缩放)。" +
+    "价差突然变宽通常意味着流动性被抽走。", 190));
+  box.append(chartBox("c_trades", "每 tick 成交笔数",
+    "成交活跃度。密集成交往往对应波动率聚集——真实市场的「波动率聚集」就是这种成簇现象。", 160));
+  box.append(chartBox("c_inv", "策略库存",
+    hasStrategy ? "做市/执行策略赚不赚钱常常不取决于价差，而取决于库存管不管得住。" : "无策略。", 160));
+
+  const t = s.tick || [];
+  const mid = s.mid || [], fund = s.fundamental || [];
+  drawChart("c_price", {
+    series: [
+      { name: "基本面", color: css("--warn"), xs: t, ys: fund, width: 1.2, dash: [5, 4] },
+      { name: "中间价", color: css("--mid"), xs: t, ys: mid, width: 1.5 },
+    ], yFmt: (v) => tickLabel(v, 1), height: 230, yZero: false, padL: 70,
+    hlines: [],
+  });
+  if (hasStrategy && pnl) {
+    drawChart("c_pnl", {
+      series: [{ name: "PnL", color: css("--good"), xs: t, ys: pnl, width: 1.6, fill: true }],
+      yFmt: (v) => tickLabel(v, 1), height: 190, yZero: true, padL: 70,
+    });
+  } else { drawChart("c_pnl", { series: [], height: 190 }); }
+  const sp = s.spread_bp || [], dp = (s.depth_bid || []).map((v, i) =>
+    (v == null || s.depth_ask[i] == null) ? null : v + s.depth_ask[i]);
+  const dmax = Math.max(...dp.filter((v) => v != null), 1);
+  const smax = Math.max(...sp.filter((v) => v != null), 1);
+  drawChart("c_spread", {
+    series: [
+      { name: "总深度", color: css("--good"), xs: t, ys: dp.map((v) => v == null ? null : v / dmax * smax), width: 1.2 },
+      { name: "价差 bp", color: css("--mid"), xs: t, ys: sp, width: 1.4 },
+    ], yFmt: (v) => tickLabel(v, 1), height: 190, padL: 62,
+  });
+  drawChart("c_trades", {
+    series: [{ name: "成交笔数", color: css("--purple"), xs: t, ys: s.n_trades || [], width: 1.2, fill: true }],
+    yFmt: (v) => tickLabel(v, 1), height: 160, padL: 62,
+  });
+  drawChart("c_inv", {
+    series: [{ name: "库存", color: css("--accent"), xs: s.tick || [], ys: s.inventory_strategy || [], width: 1.5 }],
+    yFmt: (v) => tickLabel(v, 1), height: 160, yZero: true, padL: 62,
+  });
+  if (hasStrategy) {
+    box.append(chartBox("c_markout", "Markout 曲线：成交之后价格往哪走",
+      "<b>纵轴负值 = 逆向选择</b>（成交后价格朝对自己不利的方向走）。" +
+      "被动挂单者付了半个价差换来成交，若之后价格继续不利地走，那半个价差就赔回去了。" +
+      "蓝=全体成交，绿=被动成交，红=主动成交。", 200));
+    drawChart("c_markout", {
+      series: [
+        { name: "被动", color: css("--good"), xs: (r.markout.h || []).map((h) => h), ys: r.markout.maker_drift || [], width: 1.4 },
+        { name: "主动", color: css("--accent"), xs: (r.markout.h || []).map((h) => h), ys: r.markout.taker_drift || [], width: 1.4 },
+        { name: "全部", color: css("--mid"), xs: (r.markout.h || []).map((h) => h), ys: r.markout.drift || [], width: 2 },
+      ], yFmt: (v) => tickLabel(v, 1), height: 200, yZero: true,
+      xFmt: (v) => "h=" + v, padL: 62, padB: 30,
+    });
+  }
+  box.append(chartBox("c_hist", "对数收益率分布 vs 正态分布",
+    "<b>红曲线</b>是同均值方差的正态分布。真实的加密市场「中间比正态矮、两边尾巴翘起来」（肥尾）。" +
+    "如果蓝柱和红曲线几乎重合，说明这个市场没有肥尾。", 200));
+  drawHist("c_hist", r.hist, { height: 200 });
+}
+
+/* ---- 指标 ---- */
+function renderMetrics() {
+  const box = $("#tab-metrics");
+  box.innerHTML = "";
+  const j = State.job, r = j && j.result;
+  if (!r) { box.append(emptyBox("还没有结果", ["先跑一次。"])); return; }
+  const m = r.market || r.exec && r.market || {};
+  const bt = (r.real || {})["BTCUSDT_1h"] || {};
+  const rows = [
+    ["收益率标准差 σ (bp)", "sigma_bp", 2],
+    ["超额峰度", "excess_kurtosis", 2],
+    ["偏度", "skew", 3],
+    ["|r| ACF(1)", "acf_abs_lag1", 3],
+    ["|r| ACF(5)", "acf_abs_lag5", 3],
+    ["|r| ACF(1-10) 均值", "acf_abs_mean_1_10", 3],
+    ["显著 |r| 滞后数", "n_sig_lags_abs", 0],
+    ["r ACF(1)", "acf_ret_lag1", 4],
+    ["方差比 VR(5)", "vr5", 3],
+    ["左尾 Hill α", "hill_alpha_left", 3],
+    ["|r| 99.9 分位 (bp)", "p999_bp", 1],
+  ].map(([label, key, nd]) => {
+    const v = m[key], b = bt[key];
+    const tds = [el("td", {}, label), metricRow(v, nd)];
+    if (r.real) {
+      tds.push(el("td", { class: "dim" }, fmt(b, nd === 0 ? 2 : nd + 1)));
+      const ratio = (b && isFinite(v)) ? Number(v) / Number(b) : null;
+      tds.push(el("td", { class: ratio && (ratio > 3 || ratio < 0.33) ? "warn" : "" },
+        ratio ? fmt(ratio, 2) + "×" : "—"));
+    }
+    return el("tr", {}, ...tds);
+  });
+  const heads = ["指标", "本次模拟"];
+  if (r.real) heads.push("真实 BTC 1h", "倍数");
+  box.append(card("统计特征",
+    "模拟这一段观测窗口的统计特征。有真实数据时会并排给出 BTC 小时线的对应值。" +
+    "<b>看数量级，不看小数点</b>——蓝图的判据就是「数量级逼近」。</b>",
+    el("div", { style: "overflow:auto;max-height:60vh" }, tbl(heads, rows))));
+
+  if (r.structure) {
+    const st = r.structure;
+    box.append(card("市场结构",
+      "这些量<b>没有真实靶子</b>（公开 K 线里没有盘口信息），只能做内生一致性检查——" +
+      "比如「价差收窄了、深度是不是真的加厚了」。",
+      tbl(["量", "值"], [
+        ["观测 tick 数", el("td", {}, fmt(st.n_ticks_observed, 0))],
+        ["成交笔数", el("td", {}, fmt(st.n_trades, 0))],
+        ["成交 / tick", el("td", {}, fmt(st.trades_per_tick, 2))],
+        ["平均价差 (bp)", el("td", {}, fmt(st.spread_bp_mean, 3))],
+        ["平均总深度 (手)", el("td", {}, fmt(st.depth_total_mean, 2))],
+        ["平均挂单数", el("td", {}, fmt(st.open_orders_mean, 1))],
+        ["主体数", el("td", {}, fmt(st.n_agents, 0))],
+      ].map(([a, b]) => el("tr", {}, el("td", {}, a), b)))));
+  }
+  if (r.acf) {
+    box.append(chartBox("c_acf", "自相关函数",
+      "<b>蓝</b>=|r| 的自相关（波动率记忆），<b>橙</b>=r 自身的自相关（线性可预测性）。" +
+      "真实市场：前者显著为正且衰减很慢，后者几乎为 0。虚线是 95% 置信带。", 200));
+    drawChart("c_acf", {
+      series: [
+        { name: "ACF(|r|)", color: css("--mid"), xs: r.acf.lags, ys: r.acf.abs, width: 1.6 },
+        { name: "ACF(r)", color: css("--warn"), xs: r.acf.lags, ys: r.acf.ret, width: 1.3 },
+      ], yFmt: (v) => fmt(v, 2), height: 200, yZero: true, padL: 52,
+      hlines: [
+        { v: r.acf.ci, color: css("--muted"), label: "+95%", dash: [3, 3] },
+        { v: -r.acf.ci, color: css("--muted"), dash: [3, 3] },
+      ],
+    });
+  }
+}
+
+/* ---- 策略表现 ---- */
+function renderStrategyTab() {
+  const box = $("#tab-strategy");
+  box.innerHTML = "";
+  const j = State.job, r = j && j.result;
+  if (!r || r.kind !== "strategy") {
+    box.append(emptyBox("没有策略结果", ["把运行类型切到「策略实验」再跑一次。"]));
+    return;
+  }
+  const e = r.exec, h = [1, 2, 5, 20, 60];
+  const rows = h.map((hh, i) => el("tr", {},
+    el("td", {}, "h = " + hh),
+    metricRow(r.markout.drift[i], 2),
+    el("td", { class: Math.abs(r.markout.drift_t[i]) >= 2 ? "warn" : "dim" }, fmt(r.markout.drift_t[i], 2)),
+    metricRow(r.markout.realized[i], 2),
+    metricRow(r.markout.maker_drift[i], 2),
+    metricRow(r.markout.taker_drift[i], 2),
+  ));
+  box.append(card("Markout 分解",
+    "按成交方向对齐（买=+1、卖=−1）。<b>漂移为负 = 逆向选择</b>。" +
+    "t 值绝对值小于 2 的格子要当噪声看，不要解读。",
+    tbl(["观察期", "漂移 (bp)", "t", "实现 = 捕获+漂移 (bp)", "被动成交漂移", "主动成交漂移"], rows)));
+  box.append(card("成交与库存",
+    null,
+    el("div", { class: "kpis" },
+      kpi("成交笔数", fmt(e.n_fills, 0)),
+      kpi("成交量", fmt(e.volume, 1), "手"),
+      kpi("被动占比", fmt((e.maker_volume_frac || 0) * 100, 1), "%"),
+      kpi("提交订单", fmt(e.n_submitted, 0)),
+      kpi("撤单", fmt(e.n_cancelled, 0)),
+      kpi("被拒/裁剪", fmt(e.n_rejected, 0)),
+      kpi("库存均值|·|", fmt(e.inv_abs_mean, 2), "手"),
+      kpi("库存峰值|·|", fmt(e.inv_abs_max, 2), "手"),
+      kpi("贴平占比", fmt((e.flat_frac || 0) * 100, 1), "%"),
+      kpi("单位风险收益", fmt(e.sharpe_per_tick, 4)),
+      kpi("完成度", r.completion != null ? fmt(r.completion * 100, 1) + "%" : "—"),
+      kpi("恒等式残差", fmt(e.pnl_identity_residual, 6), "", Math.abs(e.pnl_identity_residual || 0) < 1e-6 ? "good" : "bad"),
+    )));
+  box.append(card("PnL 分解明细",
+    "三项之和恒等于权益变化。<b>恒等式残差</b>必须接近 0——不为 0 说明评估代码坏了，此时整张表都不可信。",
+    tbl(["项", "金额"], [
+      ["价差捕获 pnl_capture", metricRow(e.pnl_capture, 0)],
+      ["库存变动 pnl_inventory", metricRow(e.pnl_inventory, 0)],
+      ["底仓重估 pnl_initial_mark", metricRow(e.pnl_initial_mark, 0)],
+      ["合计", metricRow(e.pnl_total_from_equity, 0)],
+      ["最大回撤", metricRow(e.max_dd, 0)],
+      ["最大回撤 %", metricRow(e.max_dd_pct, 4)],
+      ["起始权益", el("td", {}, fmt(e.equity_start, 0))],
+      ["结束权益", el("td", {}, fmt(e.equity_end, 0))],
+    ].map(([a, b]) => el("tr", {}, el("td", {}, a), b)))));
+}
+
+/* ---- 对照 ---- */
+function renderCompare() {
+  const box = $("#tab-compare");
+  box.innerHTML = "";
+  if (State.lab) {
+    const agg = State.lab.aggregated || [];
+    const scens = State.lab.scenarios || [];
+    box.append(card("批量对照结果",
+      `${State.lab.strategies.length} 策略 × ${scens.length} 场景 × ${State.lab.seeds.length} 种子` +
+      ` = <b>${State.lab.n_runs}</b> 次运行，每次观测 ${fmt(State.lab.ticks, 0)} tick。` +
+      `下表为跨种子聚合（± 为标准误）。`,
+      el("div", { class: "note", html:
+        "<b>读表三条纪律：</b>① <code>noop</code> 必须恰好 0 成交、0 盈亏——" +
+        "不为 0 说明评估口径有 bug，整张表都不能用；" +
+        "② 漂移看括号里的 t 值，<b>|t| &lt; 2 一律当噪声</b>；" +
+        "③ <b>PnL 必须拆开看</b>，「其中价差」才是本事，「其中库存」是行情给的。" })));
+    for (const sc of scens) {
+      const sub = agg.filter((a) => a.scenario === sc);
+      if (!sub.length) continue;
+      const rows = sub.map((a) => el("tr", {},
+        el("td", {}, esc(a.label)),
+        el("td", {}, fmt(a.n_fills, 0)),
+        el("td", {}, fmt(a.maker_volume_frac == null ? null : a.maker_volume_frac * 100, 1)),
+        metricRow(a["capture_bp|mean"], 2),
+        el("td", { class: Math.abs(a["drift_20_bp|t"] || 0) >= 2 ? "warn" : "dim" },
+          fmtSigned(a["drift_20_bp|mean"], 2) + " (" + fmt(a["drift_20_bp|t"], 1) + ")"),
+        metricRow(a["realized_20_bp|mean"], 2),
+        metricRow(a["pnl_total_from_equity"], 0),
+        el("td", { class: "dim" }, "±" + fmt(a["pnl_total_from_equity|sem"], 0)),
+        metricRow(a.pnl_capture, 0),
+        metricRow(a.pnl_inventory, 0),
+        metricRow(a.max_dd, 0),
+        el("td", {}, fmt(a.inv_abs_mean, 2)),
+      ));
+      box.append(card("场景 " + esc(sc), null,
+        el("div", { style: "overflow:auto;max-height:52vh" }, tbl(
+          ["策略", "成交", "被动%", "捕获bp", "漂移h20 (t)", "实现h20", "PnL", "±标准误",
+           "其中价差", "其中库存", "最大回撤", "库存均值"], rows))));
+    }
+  }
+  if (State.history.length) {
+    const sel = State.history;
+    box.append(card("单次运行并排",
+      "点左侧「总览」里的运行记录后回到这里，可以叠加不同配置的价格曲线。",
+      el("p", { class: "desc" }, "价格曲线叠加图（把每次运行的中间价并排）。"),
+      el("div", { id: "cmpWrap" })));
+    const wrap = $("#cmpWrap");
+    sel.forEach((j, i) => {
+      const cv = el("canvas", { id: "cmp" + i });
+      wrap.append(el("div", { class: "chartbox", style: "padding:8px 10px" },
+        el("h4", { style: "font-size:12px" },
+          esc((j.result.strategy_label || "市场") + " · " + j.result.scenario + " · seed " + j.result.seed)),
+        cv));
+    });
+    sel.forEach((j, i) => {
+      const cv = document.getElementById("cmp" + i); if (!cv) return;
+      cv.style.height = "120px";
+      const W = cv.clientWidth || 600, dpr = window.devicePixelRatio || 1;
+      cv.width = W * dpr; cv.height = 120 * dpr;
+      const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, W, 120);
+      g.strokeStyle = css("--grid"); g.strokeRect(0.5, 0.5, W - 1, 119);
+      g.fillStyle = css("--muted"); g.font = "11.5px sans-serif"; g.textAlign = "center";
+      g.fillText("（跑完这一条后刷新即可看到曲线 —— 时序按作业单独存放）", W / 2, 64);
+    });
+  }
+  if (!State.lab && !State.history.length)
+    box.append(emptyBox("还没有可对照的结果",
+      ["左侧「批量对照」可以一次跑多个策略 × 场景 × 种子。", "或者先跑几次单次运行。"]));
+}
+
+/* ---- 真实比对 ---- */
+function renderReal() {
+  const box = $("#tab-real");
+  box.innerHTML = "";
+  const rd = State.real;
+  if (!rd) {
+    box.append(emptyBox("还没有载入真实行情",
+      ["在左下角选一个数据集，点「载入真实行情并对比」。",
+       "数据来自既有交付包的 1 小时 K 线（BTC/ETH/SOL 各 17520 根），不重新下载，保证口径一致。"]));
+    return;
+  }
+  box.append(card(`${rd.symbol} 真实行情`,
+    `${fmt(rd.n, 0)} 根 1 小时 K 线。这里的统计量<b>就是本项目的靶子</b>——` +
+    `所有找拟合的场合都在和这一组数字比。`,
+    el("div", { class: "kpis" },
+      kpi("σ (bp)", fmt(rd.metrics.sigma_bp, 2)),
+      kpi("超额峰度", fmt(rd.metrics.excess_kurtosis, 2), "", "good"),
+      kpi("|r| ACF(1)", fmt(rd.metrics.acf_abs_lag1, 3), "", "good"),
+      kpi("显著滞后", fmt(rd.metrics.n_sig_lags_abs, 0) + " / 20", "", "good"),
+      kpi("r ACF(1)", fmt(rd.metrics.acf_ret_lag1, 4)),
+      kpi("方差比 VR(5)", fmt(rd.metrics.vr5, 3)),
+      kpi("左尾 Hill α", fmt(rd.metrics.hill_alpha_left, 3)),
+    )));
+  box.append(chartBox("c_rprice", "真实收盘价", "已下采样以便绘制。", 200));
+  box.append(chartBox("c_rhist", "真实收益率分布 vs 正态",
+    "蓝柱比正态曲线<b>中间矮、两边翘</b>——这就是肥尾。模拟市场要复现的正是这个形状。", 200));
+  const t = rd.close.map((_, i) => i);
+  drawChart("c_rprice", {
+    series: [{ name: "收盘价", color: css("--mid"), xs: t, ys: rd.close, width: 1.3 }],
+    yFmt: (v) => tickLabel(v, 1), height: 200, padL: 70,
+  });
+  drawHist("c_rhist", rd.hist, { height: 200 });
+}
+
+/* =====================================================================
+   6. URL 参数：让一次实验变成可分享、可复现的链接
+   ---------------------------------------------------------------------
+   形如 ?token=XXX&scenario=stressed&strategy=mm_skewed&ticks=8000&autorun=1
+   会在打开时自动按这些参数跑一次。用途：
+     · 把"我跑出来的这个结果"直接发给别人，对方打开就是同一场实验；
+     · 自己做实验时把参数固化在书签里，避免每次手填。
+   注意 seed 也一并写进链接才能完全复现——同一 seed + 同一注入时点
+   才复现得出同一场行情。
+   ===================================================================== */
+function applyUrlParams() {
+  const q = new URLSearchParams(location.search);
+  const set = (id, key) => { const v = q.get(key); if (v != null && $(id)) $(id).value = v; };
+  set("#seed", "seed"); set("#ticks", "ticks"); set("#warmup", "warmup");
+  set("#cash", "cash"); set("#inv", "inventory");
+  set("#labSeeds", "lab_seeds"); set("#labTicks", "lab_ticks");
+  const kind = q.get("kind");
+  if (kind === "market" || kind === "strategy") {
+    State.kind = kind;
+    $$("#kindPills button").forEach((x) => x.classList.toggle("on", x.dataset.kind === kind));
+    $("#strategySec").style.display = kind === "strategy" ? "" : "none";
+  }
+  const sc = q.get("scenario");
+  if (sc && State.meta.scenarios.some((s) => s.name === sc)) {
+    $("#scenario").value = sc; renderScenarioHint(); syncScenarioDefaults();
+    if (q.get("warmup") == null && q.get("ticks") == null) { /* 用场景默认 */ }
+  }
+  const st = q.get("strategy");
+  if (st) {
+    if (st === "custom") { $("#useCode").checked = true; $("#useCode").onchange({ target: $("#useCode") }); }
+    else if (State.meta.strategies.some((s) => s.name === st)) $("#strategy").value = st;
+  }
+  const p = q.get("params");
+  if (p) $("#params").value = p;
+  // tab=charts / metrics / strategy / compare / real：直接落到某个页签。
+  // 既方便做"点开就是这张图"的分享链接，也让自动化截图能覆盖每个页签。
+  const tb = q.get("tab");
+  if (tb && document.querySelector('#tabs button[data-tab="' + tb + '"]')) State.wantTab = tb;
+}
+async function maybeAutorun() {
+  const q = new URLSearchParams(location.search);
+  const a = q.get("autorun");
+  if (!a) return;
+  if (a === "lab") { $("#runLab").click(); return; }
+  await startRun(State.kind);
+}
+
+/* =====================================================================
+   7. 事件绑定与启动
+   ===================================================================== */
+$$("#tabs button").forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
+$$("#kindPills button").forEach((b) => b.onclick = () => {
+  State.kind = b.dataset.kind;
+  $$("#kindPills button").forEach((x) => x.classList.toggle("on", x === b));
+  $("#strategySec").style.display = State.kind === "strategy" ? "" : "none";
+});
+$("#useCode").onchange = (e) => {
+  $("#codeWrap").style.display = e.target.checked ? "" : "none";
+  $("#strategy").disabled = e.target.checked;
+  $("#params").disabled = e.target.checked;
+};
+$("#run").onclick = () => startRun(State.kind);
+$("#cancel").onclick = async () => {
+  if (!State.job) return;
+  try { await api("/api/job/" + State.job.id + "/cancel", { method: "POST", body: {} }); }
+  catch (e) { logLine("取消失败：" + e.message); }
+};
+$("#runLab").onclick = async () => {
+  const scens = $$("#labScen input:checked").map((i) => i.value);
+  if (!scens.length) { alert("至少选一个场景"); return; }
+  const body = {
+    kind: "lab", scenarios: scens,
+    n_seeds: Number($("#labSeeds").value) || 3,
+    ticks: Number($("#labTicks").value) || 4000,
+  };
+  $("#logs").innerHTML = ""; setBusy(true);
+  try {
+    const r = await api("/api/run", { method: "POST", body });
+    State.job = { id: r.job_id, kind: "lab" };
+    logLine("已提交批量对照 " + r.job_id);
+    pollJob(r.job_id);
+  } catch (e) { setBusy(false); alert("提交失败：" + e.message); }
+};
+$("#loadReal").onclick = async () => {
+  const btn = $("#loadReal"); btn.disabled = true; btn.textContent = "载入中…";
+  try {
+    State.real = await api("/api/real/" + $("#realSel").value);
+    switchTab("real");
+  } catch (e) { alert("载入失败：" + e.message); }
+  finally { btn.disabled = false; btn.textContent = "载入真实行情并对比"; }
+};
+window.addEventListener("resize", () => {
+  clearTimeout(window.__rz);
+  window.__rz = setTimeout(() => { renderCharts(); renderMetrics(); renderReal(); }, 180);
+});
+
+(async function boot() {
+  if (!TOKEN) {
+    document.body.innerHTML =
+      '<div class="empty" style="height:100vh">' +
+      '<div class="big">缺少访问令牌</div>' +
+      '<div class="tip">请通过启动器打开：<br><code>python scripts/gui.py</code><br>' +
+      '它会在控制台打印带令牌的完整地址。</div></div>';
+    return;
+  }
+  try {
+    State.meta = await api("/api/meta");
+  } catch (e) {
+    document.body.innerHTML = '<div class="empty" style="height:100vh">' +
+      '<div class="big">无法连接后端</div><div class="tip">' + esc(e.message) + "</div></div>";
+    return;
+  }
+  fillSidebar(State.meta);
+  applyUrlParams();
+  renderAll();
+  if (await maybeLoadJob()) { if (State.wantTab) switchTab(State.wantTab); return; }
+  await maybeAutorun();
+  if (State.wantTab) switchTab(State.wantTab);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# ── 产物目录（约 500 MB，且可由脚本完整重建）────────────────────
+# 包含：各阶段 metrics JSON、日志、变异验证沙箱（out/_mutation/）、
+#       图片、重跑前快照（out/_archive/）。
+# 一键复现：python scripts/reproduce_all.py
+out/
+
+# ── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── 本地环境与编辑器 ─────────────────────────────────────────────
+.venv/
+venv/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
