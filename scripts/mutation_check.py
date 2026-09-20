@@ -1201,6 +1201,24 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M77',
+        '可见状态的 extra 守卫被去掉'
+        '——`build_visible_state(**extra)` 的 **extra 是一个不受限入口，'
+        '拆掉守卫后调用方就能把 `future_close` / `outcome_pnl` 塞进 ① 可见状态，'
+        '回放会读到未来数据（答案泄漏）。'
+        '危险之处在于：签名上"没有 future_* 参数"的承诺看起来仍然成立，'
+        '守卫被绕过的表现是完全静默的——这条测试就是那个承诺的唯一载体',
+        [
+            (
+                'tw/decision_log.py',
+                '    bad = [k for k in extra if _is_leaky_key(k)]\n'
+                '    if bad:\n',
+                '    bad = []\n'
+                '    if bad:\n',
+            ),
+        ],
+    ),
 
 ]
 

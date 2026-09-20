@@ -18,6 +18,7 @@ from tw.decision_log import (
     DecisionLog,
     DecisionRecord,
     build_visible_state,
+    _is_leaky_key,
     decision_stability,
     fill_outcome,
     log_stats,
@@ -157,6 +158,48 @@ class TestVisibleState(unittest.TestCase):
                              f"参数 {name} 像是未来数据，不该出现在这里")
             self.assertFalse(name.startswith("outcome"),
                              f"参数 {name} 像是事后结果，不该出现在这里")
+
+    def test_extra不能挂未来字段(self):
+        """⭐ 只有签名守卫是不够的。
+
+        ``**extra`` 是一个不受限的入口——没有这道守卫的话，
+        ``build_visible_state(mid=1, fundamental=1, future_close=999)``
+        就能把未来数据塞进可见状态，签名上"没有 future_* 参数"的承诺
+        会被整个架空。守卫必须落在**键名**上，而不是只落在签名上。
+        """
+        with self.assertRaises(ValueError) as cm:
+            build_visible_state(mid=100.0, fundamental=99.0,
+                                future_close=999.0)
+        self.assertIn("future_close", str(cm.exception))
+
+    def test_extra不能挂事后结果(self):
+        with self.assertRaises(ValueError):
+            build_visible_state(mid=100.0, fundamental=99.0,
+                                outcome_pnl=12345.0)
+
+    def test_extra大小写与空白也拦(self):
+        """只要留一个变体漏过去，守卫就等于没有。"""
+        for k in ("Future_Close", "OUTCOME_PNL", " lookahead_x",
+                  "hindsight_return"):
+            with self.subTest(key=k):
+                with self.assertRaises(ValueError):
+                    build_visible_state(mid=100.0, fundamental=99.0, **{k: 1.0})
+
+    def test_自定义字段仍然可用(self):
+        """⚠️ 守卫不能"一刀切禁止 extra" —— 自定义字段确实有用途，
+        要挡的是命名空间，不是这个入口本身。"""
+        st = build_visible_state(mid=100.0, fundamental=99.0, news_score=0.7)
+        self.assertEqual(st["news_score"], 0.7)
+
+    def test_泄漏键判定是纯函数(self):
+        self.assertTrue(_is_leaky_key("future_close"))
+        self.assertTrue(_is_leaky_key("outcome"))
+        self.assertTrue(_is_leaky_key("LOOKAHEAD"))
+        self.assertFalse(_is_leaky_key("prompt_template"))
+        self.assertFalse(_is_leaky_key("recent_closes"))
+        # ⭐ "future" 只作为**前缀**才算——中间出现不算，
+        # 否则 "futures_basis"（期货基差，是当时真的能看到的数据）会被误杀。
+        self.assertFalse(_is_leaky_key("futures_basis"))
 
     def test_哈希确定性(self):
         a = state_digest({"mid": 100.0, "b": 2, "a": 1})

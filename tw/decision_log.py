@@ -218,9 +218,36 @@ RECOMMENDED_VISIBLE_KEYS: tuple[str, ...] = (
 )
 
 
+#: 一律拒绝的键名前缀。命中即 ``ValueError``。
+#: ⚠️ 只守前缀是**有意的**：事后字段的命名空间本身就该被整体封住，
+#: 而不是靠穷举字段名——那样每加一个新指标都要回来改这里。
+_LEAKY_PREFIXES: tuple[str, ...] = ("future", "outcome", "lookahead", "hindsight")
+
+
+def _is_leaky_key(key: str) -> bool:
+    """这个键名是否属于"事后/未来"命名空间。
+
+    大小写与首尾空白都归一化后再比——``Future_Close`` 与 ``outcome_pnl``
+    都要拦住（只要留一个变体漏过去，守卫就等于没有）。
+
+    ⚠️ 前缀必须在**词边界**上结束：``future_close`` 要拦，但
+    ``futures_basis``（期货基差——这是决策当时真的能看到的数据）
+    不能拦。判据是后一个字符不是字母（下划线/数字/结尾都算边界）。
+    不做这一步，守卫会退化成"凡含 future 字样一律拒绝"，
+    于是把合法指标误杀——一个误杀过多的守卫，最后会被人整体关掉。
+    """
+    k = str(key).strip().lower()
+    for p in _LEAKY_PREFIXES:
+        if not k.startswith(p):
+            continue
+        if len(k) == len(p) or not k[len(p)].isalpha():
+            return True
+    return False
+
+
 def build_visible_state(
     *,
-    mid: float | None,
+    mid: float | None = None,
     fundamental: float,
     spread_bp: float | None = None,
     best_bid: float | None = None,
@@ -237,8 +264,18 @@ def build_visible_state(
 
     ⭐ **这里只放"当时真的有"的东西。** 任何"事后再补进去"的字段
     （比如事后算出的收益、事后的价格）都会让回放变成答案泄漏。
-    所以本函数**不接受** ``future_*`` 这类参数——从签名上就堵住。
+
+    ``extra`` 允许挂自定义字段，但**键名受守卫**：以 ``future`` / ``outcome``
+    开头的键一律拒绝。⚠️ 为什么要守：本函数"从签名上堵住"的设计，
+    会被一个不受限的 ``**extra`` 整个架空——那样签名承诺的保护就只是装饰。
     """
+    bad = [k for k in extra if _is_leaky_key(k)]
+    if bad:
+        raise ValueError(
+            f"visible_state 里不允许出现事后字段：{sorted(bad)}。"
+            f"以 future/outcome 开头的键只能进 outcome（第 ⑥ 项），"
+            f"不能进 ① 可见状态——否则回放会读到未来数据。"
+        )
     st: dict[str, Any] = {
         "mid": float(mid) if mid is not None else None,
         "fundamental": float(fundamental),

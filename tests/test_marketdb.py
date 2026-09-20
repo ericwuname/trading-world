@@ -715,6 +715,44 @@ class TestSyntheticCandles(unittest.TestCase):
             self.assertGreaterEqual(b.high, max(b.open, b.close))
             self.assertLessEqual(b.low, min(b.open, b.close))
 
+    def test_影线不是靠乘性噪声凑出来的(self) -> None:
+        """⭐ 回归守卫（对应 M63）。
+
+        ``high`` 必须真的来自**窗口内路径的极值**，而不是"在 max(o,c) 上
+        乘一个极小的正噪声"凑出来的假影线。
+
+        这两者在下述弱测试下**无法区分**：只看"high > max(o,c) 吗"，
+        乘噪声那条路也能 49/49 全过——测试于是变成摆设（M63 就是这么
+        Survivor 下来的）。真正的判据是：影线**不能太小**。
+        乘性噪声只有 ~2e-4 的相对量级，而路径极值在中位数以上的根里
+        会显著超出 max(o,c)。
+        """
+        spec = GenerateSpec(inst_id="S", bar="1H", n_bars=200, seed=5,
+                            start_ts=1_700_000_000_000)
+        bars = prices_to_candles(gen_random_walk(spec), spec)
+        rel_hi = [(b.high - max(b.open, b.close)) / max(b.open, b.close)
+                  for b in bars]
+        rel_lo = [(min(b.open, b.close) - b.low) / max(b.open, b.close)
+                  for b in bars]
+        # 乘性噪声只有 ~2e-4 的相对量级；真正的路径极值会**明显**大于它。
+        # ⭐ 决定性判据：必须有相当比例的根，影线显著大于噪声地板。
+        # 只有当 high/low 真的取了窗口内极值时才会出现这种大影线。
+        # （阈值 1e-3 是实测标定的：真实数据约有 2/3 的根超过它，
+        # 而 M63 注入后只剩 ~0。用中位数做辅助判据不可靠——
+        # 实测中位数本身就在 1e-3 附近，会随种子漂移。）
+        big_hi = sum(1 for r in rel_hi if r > 1e-3)
+        big_lo = sum(1 for r in rel_lo if r > 1e-3)
+        self.assertGreater(
+            big_hi, len(bars) * 0.2,
+            f"只有 {big_hi}/{len(bars)} 根的上影线超过噪声地板 1e-3——"
+            f"high 很可能只取了 max(open, close) 再乘噪声（M63）",
+        )
+        self.assertGreater(
+            big_lo, len(bars) * 0.2,
+            f"只有 {big_lo}/{len(bars)} 根的下影线超过噪声地板 1e-3——"
+            f"low 很可能只取了 min(open, close) 再乘噪声",
+        )
+
     def test_时间戳等间隔(self) -> None:
         spec = GenerateSpec(inst_id="S", bar="1H", n_bars=10, seed=1,
                             start_ts=1_700_000_000_000)

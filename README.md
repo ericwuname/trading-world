@@ -364,8 +364,15 @@ mark=110 → ≈9.996；mark=95 → ≈90.996。
    `run_id / tick / agent_id / prompt_template / model / context_hash`。
    `wall_ms` / `latency_ms` / `outcome` **不能进**——
    它们每次不同，进来就会让"同一次决策算出不同 ID"，回放核对直接失效。
-2. **可见状态的签名上没有 `future_*`** —— 从**函数签名**上堵住答案泄漏，
-   而不是靠纪律。
+2. **可见状态的签名上没有 `future_*`，且 `**extra` 的键名受守卫** ——
+   只从**函数签名**上堵住答案泄漏是不够的：`**extra` 是一个不受限入口，
+   `build_visible_state(mid=1, fundamental=1, future_close=999)` 就能把
+   未来数据塞回去，签名上"没有 `future_*` 参数"的承诺会被整个架空。
+   守卫因此落在**键名**上（`_is_leaky_key`）：以
+   `future` / `outcome` / `lookahead` / `hindsight` **开头且在词边界**的键
+   一律 `ValueError`。⚠️ 词边界是必需的——`futures_basis`（期货基差，
+   决策当时真的能看到）不能被误杀；一个误杀过多的守卫最后会被人整体关掉。
+   已开 M77 变异体守住（见下）。
 3. **JSONL 只追加**：`open(mode="w")` 直接 `ValueError`。
 
 体检指标（`log_stats`）都是**直接可观测量**，不是拟合出来的刻度：
@@ -455,7 +462,7 @@ gui/            ⭐  桌面端
   desktop.py         pywebview 窗口，失败自动退回浏览器
   static/index.html  单文件前端（零外部依赖，图表手写 canvas）
 
-tests/              1067 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
+tests/              1073 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
                     + 数据层与 MCP + A1 订单模型与账户 + A2 留痕与风控）
                     ↑ 这个数字由 `scripts/selfcheck.py` 的 ③b 项与
                     `out/test_count.txt`（tests 步骤自动写回）对账——
@@ -527,7 +534,7 @@ scripts/
   bench_market.py   ⭐  内核性能与**等价性**基准：注入点带/不带某段计算，
                         既比墙钟，也比逐点行情是否完全一致
                         （只测速度不测等价 = 用"看起来差不多"换性能）
-  mutation_check.py     变异验证：76 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57 + 数据层与MCP M58~M63 + 订单模型与账户 M64~M71 + 留痕与风控 M72~M76）
+  mutation_check.py     变异验证：77 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57 + 数据层与MCP M58~M63 + 订单模型与账户 M64~M71 + 留痕与风控 M72~M77）
                         ↑ 这个数字由 selfcheck 的 ③c 项与 mutation_check.py 里
                         实际注册的编号对账
                         `--only M40` 只跑指定变异体（新增变异体**必须**单独跑一次——
