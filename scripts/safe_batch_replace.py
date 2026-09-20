@@ -64,9 +64,16 @@ def _rel_key(fp: Path, root: Path) -> Path:
         return Path(fp.name)
 
 
-def _apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
+def _apply_replacements(text: str, replacements: list[tuple[str, str]],
+                        *, literal: bool = False) -> str:
+    """按顺序应用替换。
+
+    ``literal=True`` 时用 ``str.replace`` 做**字面**替换——
+    文档改写几乎总是字面的（原文里带 ``**``、``|``、``(`` 这些 markdown 符号，
+    当正则会直接报 ``multiple repeat`` 或静默匹配到别处）。
+    """
     for pattern, repl in replacements:
-        text = re.sub(pattern, repl, text)
+        text = text.replace(pattern, repl) if literal else re.sub(pattern, repl, text)
     return text
 
 
@@ -74,7 +81,8 @@ def safe_batch_replace(file_paths: list[str | Path],
                        replacements: list[tuple[str, str]],
                        *, dry_run: bool = True,
                        root: Path | str | None = None,
-                       check_syntax: bool = True) -> dict:
+                       check_syntax: bool = True,
+                       literal: bool = False) -> dict:
     """对一组文件批量做正则替换，**带语法护栏**。
 
     参数
@@ -114,7 +122,8 @@ def safe_batch_replace(file_paths: list[str | Path],
         tmp_root = Path(tmpdir)
         for fp in paths:
             original = fp.read_text(encoding="utf-8")
-            modified = _apply_replacements(original, replacements)
+            modified = _apply_replacements(original, replacements,
+                                           literal=literal)
             key = str(fp)
             if modified == original:
                 unchanged.append(key)

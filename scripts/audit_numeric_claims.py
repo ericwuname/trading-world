@@ -230,6 +230,62 @@ def _h4_status_rows() -> list[str]:
     return out
 
 
+def _consistency_rows() -> list[str]:
+    """§3.6：一致性审计的结果与**撤回清单**（工作线O）。
+
+    这一节的存在理由：上一轮报告在这里写过两条「历史结论被推翻」，
+    而它们只凭点估计方向、没做区间重叠检验。
+    审计后确认那两条**站不住**——本节把撤回结论**正式落在清单里**，
+    免得它们继续以「结论」的措辞留在文档里。
+    """
+    O = _load_json("workstream_O_metrics.json")
+    if not O:
+        return ["", "（缺 `out/workstream_O_metrics.json`——"
+                    "先跑 `python scripts/run_workstream_O.py`）", ""]
+    out = [""]
+    comps = O.get("comparisons") or []
+    if comps:
+        out.append("四条「此前 A 更好 → 现在 B 更好」类比较的重新检验"
+                   "（区间重叠度量，见第十条纪律）：")
+        out.append("")
+        out.append("| 编号 | 比较 | k_A | k_B | 重叠比例 | 判定 | 需多少种子 |")
+        out.append("|---|---|---|---|---|---|---|")
+        need = {r["id"]: r for r in
+                ((O.get("eo5_required_n") or {}).get("rows") or [])}
+        for c in comps:
+            n = need.get(c["id"], {}).get("required_n")
+            out.append(f"| {c['id']} | {c['label']} | {c['point_a']:.3f} | "
+                       f"{c['point_b']:.3f} | **{c['overlap_fraction'] * 100:.1f}%** | "
+                       f"**{c['verdict']}** | "
+                       f"{'—' if n is None else f'{n:.0f}'} |")
+    retr = (O.get("eo6_retractions") or {}).get("items") or []
+    if retr:
+        out += ["", "### ⚠️ 正式撤回的表述", ""]
+        for r in retr:
+            out.append(f"- **{r['id']}**：原表述「{r['original']}」")
+            out.append(f"  ⇒ **撤回**。{r['replacement']}")
+    prog = ((O.get("eo4_targeted") or {}).get("eo2_progressive") or {})
+    trend = prog.get("trend") or []
+    if trend:
+        out += ["", "### O.4 渐进检查（定向加种子到 16）", ""]
+        out.append("| 种子数 | k(基线) | k(+fund) | 点估计差 | 重叠比例 | 判定 |")
+        out.append("|---|---|---|---|---|---|")
+        for t in trend:
+            out.append(f"| {t['n_seeds']} | {t['k_baseline']:.3f} | {t['k_fund']:.3f} | "
+                       f"**{t['point_diff']:+.3f}** | "
+                       f"{t['overlap_fraction'] * 100:.1f}% | {t['verdict']} |")
+        if len(trend) >= 2:
+            d0, dz = abs(trend[0]["point_diff"]), abs(trend[-1]["point_diff"])
+            out += ["",
+                    f"⭐ **幅度收敛**：点估计差从 {d0:.3f} 缩到 {dz:.3f}"
+                    f"（**缩小 {(1 - dz / d0) * 100:.0f}%**）。"
+                    "**方向**在三个 checkpoint 上始终一致（这是好迹象），"
+                    "但**幅度**持续缩小——这正是「效应量被小样本高估」的典型形态。"
+                    "重叠比例始终 ≥99% ⇒ 依然无法判定。"]
+    out.append("")
+    return out
+
+
 def build_inventory(scanned: dict[str, list[dict]]) -> str:
     """生成 ``docs/历史数值陈述分辨力清单.md``。"""
     all_rows: list[dict] = []
@@ -338,6 +394,10 @@ def build_inventory(scanned: dict[str, list[dict]]) -> str:
     add("")
     add("### 3.5 H4 象限检验的状态（工作线M）")
     for ln in _h4_status_rows():
+        add(ln)
+    add("")
+    add("### 3.6 一致性审计与撤回清单（工作线O）")
+    for ln in _consistency_rows():
         add(ln)
     add("")
     add("## 4. 结尾：这份清单要来干什么")

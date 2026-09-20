@@ -875,6 +875,43 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M55',
+        '区间重叠比例的分母用了两区间宽度**之和**而不是较窄的那个'
+        '——100% 包含会被算成约 50%，「无法判定」会看起来像「显著」',
+        [
+            (
+                'tw/analyzer_consistency.py',
+                '    narrower = min(w_a, w_b)',
+                '    narrower = w_a + w_b',
+            ),
+        ],
+    ),
+    (
+        'M56',
+        '一致性判定的阈值方向写反（重叠 **大** 时反而判「显著」）',
+        [
+            (
+                'tw/analyzer_consistency.py',
+                '    if frac <= SIGNIFICANT_MAX_OVERLAP:',
+                '    if frac >= SIGNIFICANT_MAX_OVERLAP:',
+            ),
+        ],
+    ),
+    (
+        'M57',
+        '方向性判定的两个排除条件写反（excludes_0_5 用 1.0 的判据、反之亦然）'
+        '——把「偏线性」的家族标成「偏超凹」或「无法判断」',
+        [
+            (
+                'tw/analyzer_consistency.py',
+                '    excludes_0_5 = not (lo <= 0.5 <= hi)\n'
+                '    excludes_1_0 = not (lo <= 1.0 <= hi)',
+                '    excludes_0_5 = not (lo <= 1.0 <= hi)\n'
+                '    excludes_1_0 = not (lo <= 0.5 <= hi)',
+            ),
+        ],
+    ),
 
 ]
 

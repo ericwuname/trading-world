@@ -1605,6 +1605,32 @@ def sec_k_resolution() -> str:
 <div class="warn"><p>未找到 <code>out/k_uncertainty.json</code>。先跑
 <code>python scripts/diagnose_k_uncertainty.py</code> 再重出本报告。</p></div>
 </section>"""
+
+    # ---- 一致性审计的撤回（工作线O）----
+    WO = load("workstream_O_metrics.json") or {}
+    wcomps = WO.get("comparisons") or []
+    wretr = (WO.get("eo6_retractions") or {}).get("items") or []
+    audit_html = ""
+    if wcomps:
+        rows2 = "".join(
+            f"<tr><td>{c['id']}</td><td>{c['label']}</td>"
+            f"<td>{c['point_a']:.3f}</td><td>{c['point_b']:.3f}</td>"
+            f"<td><b>{c['overlap_fraction'] * 100:.1f}%</b></td>"
+            f"<td>{c['verdict']}</td></tr>" for c in wcomps)
+        retr_txt = "".join(
+            f"<li><b>{r['id']}</b>：{r['original']} ⇒ <b>撤回</b>。{r['replacement']}</li>"
+            for r in wretr)
+        audit_html = f"""
+<h3>⚠️ 进一步的自我更正：本报告此前两处「结论被推翻」的措辞已撤回（工作线O）</h3>
+<p>「回填标准配置」那一轮曾在报告里写下两条「历史结论被推翻」——
+<b>但那两条只凭点估计的方向变化，没有做区间重叠检验</b>。
+补做之后（第十条纪律）发现：</p>
+<table><thead><tr><th>编号</th><th>比较</th><th>k_A</th><th>k_B</th>
+<th>区间重叠</th><th>判定</th></tr></thead><tbody>{rows2}</tbody></table>
+<p><b>四条全部是「依然无法判定」</b>，其中两个比较的重叠达 100% 与 80.9%。
+{f'<b>需要正式撤回的表述：</b><ul>{retr_txt}</ul>' if retr_txt else ''}</p>
+<p>⚠️ 注意区分两件事：<b>撤回的只是「A 比 B 更好/更差」这类家族之间的说法</b>；
+各家族自己的方向性标签（CI 是否排除 0.5）<b>不受影响</b>。</p>"""
     return f"""
 <section id="kres">
 <h2>1.5　⚠️ 重大更正：k 的比较在本装置上<strong>没有分辨力</strong></h2>
@@ -1646,6 +1672,7 @@ k 的点估计几乎由首尾两点之比决定。</li>
 「需要多少种子」的量化）见
 <code>docs/前置校验-EA4-诊断报告.md</code>。</p>
 {backfill_html}
+{audit_html}
 </div>
 </section>"""
 

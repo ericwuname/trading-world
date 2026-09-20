@@ -453,7 +453,14 @@ def check_imports(r: Report) -> None:
         #   power_analysis_H4     —— 功效公式（scipy 非中心 t 分布）
         #   update_inventory_post_L_M —— 收尾：把 L/M 结果并入历史清单
         "safe_batch_replace", "claim_mutation_ids", "run_workstream_L",
-        "run_workstream_M", "power_analysis_H4", "update_inventory_post_L_M"]
+        "run_workstream_M", "power_analysis_H4", "update_inventory_post_L_M",
+        # 一致性审计与收尾那一轮新增的四个：
+        #   run_workstream_O   —— 用区间重叠度量审上一轮自己的「推翻」
+        #   run_workstream_Q   —— 「非对称」表述统一更正（safe_batch_replace 驱动）
+        #   tag_final_verdicts —— 新验收标准：方向性偏离检验
+        #   make_consistency_summary —— 本轮交付小结
+        "run_workstream_O", "run_workstream_Q", "tag_final_verdicts",
+        "make_consistency_summary"]
     bad2 = []
     for m in scr_mods:
         try:
