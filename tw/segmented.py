@@ -58,17 +58,32 @@ from .simexec import ExecConfig
 # 切段
 # ======================================================================
 def segment_ranges(n_bars: int, seg_len: int, *,
-                   min_history: int = 12) -> list[tuple[int, int]]:
+                   min_history: int = 12,
+                   offset: int = 0) -> list[tuple[int, int]]:
     """把可用区间切成若干**决策区间** ``(start, end)``（闭区间）。
 
     ``min_history``：每段的可见状态要用到开始前的若干根收盘价。
     第 0 段从 ``min_history`` 开始，保证每段都有等量的历史可用——
     ⚠️ 若允许第 0 段从 0 开始，它的 ``recent_closes`` 会比别的段短，
     于是各段**输入不等价**，配对就不成立。
+
+    ``offset``：⭐ **把整张"段网格"整体平移**（等价于换一组窗口）。
+    这是本项目里的**稳健性旋钮**（相当于别的实验里的"换随机种子"）：
+    本设计没有随机性，唯一的"任意选择"就是**从哪一根开始切段**。
+    ⇒ 单靠一组窗口得出的结论，与"单标的"一样不可靠（本项目吃过
+      "单标的翻符号"的亏）。
+
+    ⚠️ **限定 ``0 <= offset < seg_len``**：
+    取 ``seg_len`` 的整数倍只是把同一组窗口平移（丢掉开头几段），
+    不是"换一组窗口"，起不到稳健性检验的作用。
     """
     if seg_len < 1:
         raise ValueError(f"seg_len 必须 >= 1，收到 {seg_len}")
-    lo = max(0, int(min_history))
+    if not (0 <= int(offset) < int(seg_len)):
+        raise ValueError(
+            f"seg_offset 必须在 [0, seg_len) 内，收到 {offset}（seg_len={seg_len}）；"
+            f"取 seg_len 的整数倍只是平移同一组窗口，起不到换窗口的作用")
+    lo = max(0, int(min_history)) + int(offset)
     hi = int(n_bars) - 1
     if hi - lo + 1 < seg_len:
         return []
@@ -142,6 +157,7 @@ def run_paired_segments(
     keep_runs: bool = False,
     progress: Callable[[int, int], None] | None = None,
     parallel: int = 1,
+    seg_offset: int = 0,
 ) -> SegmentedRuns:
     """在每一段上把**所有配置各跑一次**，得到配对的观测。
 
@@ -159,7 +175,7 @@ def run_paired_segments(
     """
     cfg_exec = exec_config or ExecConfig()
     ranges = segment_ranges(len(getattr(series, "close", [])), seg_len,
-                            min_history=min_history)
+                            min_history=min_history, offset=seg_offset)
     if max_segs:
         ranges = ranges[: int(max_segs)]
     if not ranges:

@@ -89,6 +89,9 @@ def main() -> int:
                          "见 `scripts/a6_power.py`")
     ap.add_argument("--bar", default="1H")
     ap.add_argument("--seg-len", type=int, default=50, help="每段根数 L")
+    ap.add_argument("--seg-offset", type=int, default=0,
+                    help="⭐ 稳健性旋钮：把整张「段网格」整体平移"
+                         "（等价于换一组窗口）。限定 [0, seg-len)")
     ap.add_argument("--segs", type=int, default=8, help="段数 K")
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--temperature", type=float, default=0.2)
@@ -106,7 +109,10 @@ def main() -> int:
                     help="给这一组开 KPI（目标 + 在场率下限 + 回撤上限 + 换手区间）")
     ap.add_argument("--calibrate-kpi", action="store_true",
                     help="先用**基线行为分布**标定 KPI 阈值，再跑（推荐）")
-    ap.add_argument("--kpi-target", type=float, default=0.01)
+    ap.add_argument("--kpi-target", type=float, default=0.01,
+                    help="固定收益目标（**只有不标定时才用**；标定时会被按窗口覆盖）")
+    ap.add_argument("--kpi-target-q", type=float, default=0.50,
+                    help="收益目标取基线每段净收益的哪个分位（默认 0.50=中位数 ⇒ 永远可达）")
     ap.add_argument("--kpi-presence", type=float, default=0.30)
     ap.add_argument("--kpi-dd", type=float, default=0.05)
     ap.add_argument("--kpi-turnover", default="1,40",
@@ -191,6 +197,7 @@ def main() -> int:
     kpi_cfg = None
     if args.kpi:
         pres, turn, dd = [], [], []
+        calib_nets: list[float] = []
         if args.calibrate_kpi:
             # 先只跑**基线**（规则策略，免费、秒级）拿行为分布，再据此定阈值。
             # **不要拍脑袋**：阈值比基线松 = 等于没设；比基线严苛得多 =
@@ -209,6 +216,7 @@ def main() -> int:
                 initial_cash=args.equity, lever=args.lever,
                 max_segs=args.segs, exec_config=base_exec,
                 parallel=max(1, args.parallel),
+                seg_offset=args.seg_offset,
                 # ⚠️ ``keep_runs=True`` **不能省**：默认 False 时 ``pre.runs`` 是
                 # 空的 ⇒ 标定拿不到数据 ⇒ 静默退回命令行阈值，
                 # 而日志看起来像「标定成功」。这是"沉默失败"，最难查的一类。
@@ -232,9 +240,18 @@ def main() -> int:
                     turn.append(
                         float(rr.meta.get("exec", {}).get("turnover", 0.0))
                         / max(rr.initial_equity, 1.0))
+            # ⭐ **收益目标也从基线标定**，而且用**与 verdict 完全同一个量**
+            # （`pre.net` 里的每段净收益）——两份口径各算一次必然分叉。
+            for _d in (pre.net or []):
+                for _nm, _v in _d.items():
+                    if _nm in KPI_CALIB_EXCLUDE:
+                        continue
+                    if isinstance(_v, (int, float)) and _v == _v:
+                        calib_nets.append(float(_v))
             if pres:
                 cal = calibrate_from_baseline(presence=pres, turnover=turn,
-                                              drawdown=dd)
+                                              drawdown=dd, nets=calib_nets,
+                                              target_q=args.kpi_target_q)
                 print(f"    标定结果：在场率下限 {cal['min_presence']:.1%}、"
                       f"回撤上限 {cal['max_drawdown']:.2%}、"
                       f"换手区间 [{cal['turnover_lo']:.2f}, "
@@ -256,6 +273,20 @@ def main() -> int:
                 args.kpi_presence = _clipped
                 args.kpi_dd = float(cal["max_drawdown"])
                 args.kpi_turnover = f"{cal['turnover_lo']},{cal['turnover_hi']}"
+                # ⭐ 收益目标必须**随窗口长度缩放**，否则 L=8 时要求 8 根赚 1%
+                # ⇒ 48/48 段全部不达标、约束变成噪音（实测踩过）。
+                if cal.get("target_return_missing"):
+                    raise SystemExit(
+                        "❌ KPI 标定失败：拿不到基线的每段净收益 ⇒ "
+                        "收益目标会退回固定值（+1%），而那个目标**不可达**。")
+                _t = float(cal["target_return"])
+                if cal.get("target_return_not_positive"):
+                    print(f"    ⚠️ 标定出的收益目标 {_t:+.3%} ≤ 0 ⇒ "
+                          f"「要赚」这条几乎无约束力（不亏的段都算达标）。"
+                          f"报告里不要把它当成一个'有要求的目标'。")
+                print(f"    ⭐ 收益目标（按窗口标定，{args.kpi_target_q:.0%} 分位）："
+                      f"{args.kpi_target:+.3%} → **{_t:+.3%}**")
+                args.kpi_target = _t
             else:
                 print("    ⚠️ 标定失败（拿不到基线行为分布）⇒ 沿用命令行阈值")
         lo, hi = (float(x) for x in args.kpi_turnover.split(","))
@@ -330,6 +361,7 @@ def main() -> int:
         series, factories, seg_len=args.seg_len, min_history=12,
         initial_cash=args.equity, lever=args.lever, max_segs=args.segs,
         exec_config=base_exec, parallel=max(1, args.parallel),
+        seg_offset=args.seg_offset,
         progress=None if args.dry else _prog,
         # ⚠️ ``keep_runs=True`` **不能省**：末段的「KPI 逐段判定」与接线自检
         # 都读 ``res.runs``。默认 False 时它们是空的 ⇒ 那两段会被**静默跳过**，

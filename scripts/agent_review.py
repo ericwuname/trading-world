@@ -116,6 +116,8 @@ def main() -> int:
                          "另一份行情（覆盖率会掉到 0，脚本会直接失败）")
     ap.add_argument("--bar", default="1H")
     ap.add_argument("--seg-len", type=int, default=50)
+    ap.add_argument("--seg-offset", type=int, default=0,
+                    help="⚠️ 必须与录制时**同一个偏移**——否则重建的是**另一组窗口**")
     ap.add_argument("--segs", type=int, default=8)
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--horizon", type=int, default=4,
@@ -206,7 +208,7 @@ def main() -> int:
     res = run_paired_segments(
         series, factories, seg_len=args.seg_len, min_history=12,
         max_segs=args.segs, exec_config=ExecConfig(),
-        parallel=1, keep_runs=True,
+        parallel=1, keep_runs=True, seg_offset=args.seg_offset,
     )
     cov = getattr(client, "coverage", float("nan"))
     print(f"  回放覆盖率：{cov:.1%}（命中 {getattr(client, 'hits', 0)} / "

@@ -181,9 +181,11 @@ def calibrate_from_baseline(
     presence: list[float],
     turnover: list[float],
     drawdown: list[float],
+    nets: list[float] | None = None,
     presence_q: float = 0.20,
     turnover_q: tuple[float, float] = (0.10, 0.90),
     drawdown_q: float = 0.90,
+    target_q: float = 0.50,
 ) -> dict[str, Any]:
     """用**基线**的行为分布定阈值。
 
@@ -191,9 +193,11 @@ def calibrate_from_baseline(
     若比基线严苛得多，测到的就是「模型被逼到墙角」而不是「KPI 有用」。
 
     做法：取基线各指标的**分位数**——
+
     - 在场率下限 ← 基线的 **20% 分位**（比多数基线更松 ⇒ 是个"别躺平"的底线）
     - 换手区间  ← 基线的 10%~90% 分位
     - 回撤上限  ← 基线的 **90% 分位**（比多数基线更松）
+    - ⭐ 收益目标 ← 基线的**净收益分位**（默认中位数）
 
     ⚠️⚠️ **调用方必须先剔除"按定义就不动"的基线**（本项目的 `noop`）。
     理由：`noop` 的在场率恒为 0、换手恒为 0，它在池子里会把
@@ -202,6 +206,19 @@ def calibrate_from_baseline(
     换手下限标成 0.00）。本函数**不做剔除**（它看不到基线名），
     但会把该情形显式标出来：
     ``min_presence_vacuous=True`` ⇒ 调用方**必须**报警或直接失败。
+
+    ⭐⭐ **为什么 `target_return` 也要标定**（2026-09-22 补，第 16 个缺陷）
+    ------------------------------------------------------------------
+    这一条原本是**唯一还在拍脑袋的阈值**（硬编码 `+1%`），
+    而它是**绝对值、不随窗口长度变**的 ⇒ 窗口只有 8 根时要求 +1%
+    ⇒ **48/48 段全部 `return` 失败**，模型每一次都被告知"你还差得远"。
+    ⇒ 那批实验实际测的是「**目标不可达**时它会怎么做」，
+      而不是「给目标好不好」。**这是被 §3.3 的 KPI 判定数据自己暴露出来的**
+      （48/48 段 `return` 失败——一个"目标"若 100% 不达标，那就不是目标，
+      是噪音）。
+
+    ⇒ 修法：**与其余三个阈值同源**——用基线在**同一窗口长度**下的净收益分位。
+    这样它自动随 L 缩放，而且"要达到基线的水平"是个**永远可达**的口径。
     """
     def _q(xs: list[float], q: float) -> float:
         if not xs:
@@ -213,7 +230,7 @@ def calibrate_from_baseline(
     lo, hi = turnover_q
     floor = _q(presence, presence_q)
     t_lo = _q(turnover, lo)
-    return {
+    out: dict[str, Any] = {
         "min_presence": floor,
         "turnover_lo": t_lo,
         "turnover_hi": _q(turnover, hi),
@@ -225,6 +242,29 @@ def calibrate_from_baseline(
                  "但分位数本身也依赖样本量，样本小时要谨慎。"),
         "n": len(presence),
     }
+    nn = [float(x) for x in (nets or [])
+          if isinstance(x, (int, float)) and x == x]
+    if nn:
+        tgt = _q(nn, target_q)
+        out["target_return"] = tgt
+        out["target_q"] = float(target_q)
+        out["target_return_missing"] = False
+        #: ⚠️ 目标 ≤ 0 ⇒ 「要赚」这条几乎无约束力（任何不亏的段都算达标）。
+        #: 不失败，但**必须报出来**——否则报告会把它当成一个"有要求的目标"。
+        out["target_return_not_positive"] = (not (tgt > 0.0))
+        out["target_n"] = len(nn)
+    else:
+        # ⚠️ 拿不到 nets 时**不要编一个目标**：显式标成缺失，
+        # 让调用方决定是沿用固定值还是直接失败。
+        out["target_return"] = float("nan")
+        out["target_q"] = float(target_q)
+        #: ⚠️ **这个键必须两种情形都存在**：否则调用方写
+        #: `cal["target_return_missing"]` 时会在"拿到了 nets"这条路上抛 KeyError
+        #: —— 而那正是**主路径**。（测试就是这么抓到的。）
+        out["target_return_missing"] = True
+        out["target_return_not_positive"] = False
+        out["target_n"] = 0
+    return out
 
 
 # ======================================================================

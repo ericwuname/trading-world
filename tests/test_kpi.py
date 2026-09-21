@@ -440,5 +440,123 @@ class TestV6IsStrictSingleVariable(unittest.TestCase):
         self.assertIn("未设置", body)
 
 
+# ======================================================================
+# ⭐⭐ 收益目标必须**随窗口长度缩放**（第 16 个真缺陷）
+# ======================================================================
+class TestCalibratedTargetReturn(unittest.TestCase):
+    """由「48/48 段全部 `return` 失败」暴露出来的缺陷（2026-09-22）。
+
+    原实现把 `target_return` 硬编码成 `+1%`——**绝对值、不随窗口长度变**。
+    窗口只有 8 根时要求 8 根赚 1% ⇒ **一段都达不到**，
+    模型每一次都被告知"你还差得远"。
+
+    ⇒ 那批实验实际测的是「**目标不可达**时它会怎么做」，
+      而不是「给目标好不好」。
+    ⭐ **这是被数据自己暴露的**：一个"目标"若 100% 不达标，
+      那它就不是目标，是噪音。
+
+    修法：与其余三个阈值**同源**——用基线在**同一窗口长度**下的净收益分位。
+    """
+
+    NETS = [-0.010, -0.004, 0.000, 0.002, 0.006, 0.011]
+
+    def _cal(self, **kw):
+        from tw.kpi import calibrate_from_baseline
+        base = dict(presence=[0.4, 0.6, 0.5], turnover=[0.3, 0.6, 0.9],
+                    drawdown=[0.01, 0.02, 0.03], nets=self.NETS)
+        base.update(kw)
+        return calibrate_from_baseline(**base)
+
+    def test_目标取净收益分位(self):
+        cal = self._cal()
+        self.assertFalse(cal["target_return_missing"])
+        # 中位数分位（取整法）落在 0.000 或 0.002 上
+        self.assertIn(cal["target_return"], (0.0, 0.002))
+
+    def test_目标随窗口长度线性缩放(self):
+        """⭐⭐ **本组的核心**：目标与 `nets` **同单位** ⇒ nets 按 L 缩放，
+        目标就按 L 缩放。这正是原实现缺的性质。
+        """
+        a = self._cal(nets=[x * 1 for x in self.NETS])["target_return"]
+        b = self._cal(nets=[x * 5 for x in self.NETS])["target_return"]
+        if a == 0.0:
+            # 中位数恰好是 0 时比值无意义 ⇒ 换个分位再验
+            a = self._cal(nets=[x for x in self.NETS], target_q=0.9)["target_return"]
+            b = self._cal(nets=[x * 5 for x in self.NETS],
+                          target_q=0.9)["target_return"]
+        self.assertAlmostEqual(b / a, 5.0, places=6)
+
+    def test_目标q越高目标越高(self):
+        lo = self._cal(target_q=0.2)["target_return"]
+        hi = self._cal(target_q=0.9)["target_return"]
+        self.assertGreater(hi, lo)
+
+    def test_没有nets时明确报缺失而不是编一个(self):
+        """⚠️ **不许静默退回固定值**——那正是要修的东西。"""
+        cal = self._cal(nets=None)
+        self.assertTrue(cal["target_return_missing"])
+        self.assertNotEqual(cal["target_return"], cal["target_return"])  # nan
+
+    def test_全负时标记无约束力(self):
+        cal = self._cal(nets=[-0.02, -0.01, -0.005])
+        self.assertTrue(cal["target_return_not_positive"])
+
+    def test_基线自己有一半段达标(self):
+        """⭐⭐ **"永远可达"这条性质要能被测**。
+
+        目标 = 基线净收益的中位数 ⇒ **至少一半的基线段达标**。
+        若有人把目标改回固定值（或改错分位方向），这条会变红。
+        """
+        from tw.kpi import KPIConfig, KPIState, kpi_verdict
+        cal = self._cal()
+        kpi = KPIConfig(target_return=cal["target_return"],
+                        min_presence=0.0, max_drawdown=1.0,
+                        turnover_lo=0.0, turnover_hi=1e9)
+        ok = 0
+        for net in self.NETS:
+            st = KPIState(initial_equity=100.0, equity=100.0 * (1 + net),
+                          bars_done=8, bars_total=8)
+            if kpi_verdict(kpi, st)["detail"]["return"]["ok"]:
+                ok += 1
+        self.assertGreaterEqual(ok, len(self.NETS) // 2)
+
+    def test_固定目标比标定目标苛刻得多(self):
+        """⚠️ **把缺陷本身写成断言**：同一批段，固定 +1% 目标的达标数
+        必须**显著少于**标定目标。这样有人把它改回固定值会立刻被发现。
+
+        ⚠️ 我第一版写的是「固定目标下一段都不该达标」——**错了**：
+        这组样本里恰好有一段 1.1% > 1%。断言要写成**关系**，
+        不要写成"我以为的具体数字"（本项目"断言存在 ≠ 有分辨力"的老毛病）。
+        """
+        from tw.kpi import KPIConfig, KPIState, kpi_verdict
+
+        def n_ok(tgt):
+            kpi = KPIConfig(target_return=tgt, min_presence=0.0,
+                            max_drawdown=1.0, turnover_lo=0.0,
+                            turnover_hi=1e9)
+            c = 0
+            for net in self.NETS:
+                st = KPIState(initial_equity=100.0,
+                              equity=100.0 * (1 + net),
+                              bars_done=8, bars_total=8)
+                if kpi_verdict(kpi, st)["detail"]["return"]["ok"]:
+                    c += 1
+            return c
+
+        n_fixed = n_ok(0.01)
+        n_cal = n_ok(self._cal()["target_return"])
+        self.assertLess(n_fixed, n_cal)
+        self.assertGreaterEqual(n_cal, len(self.NETS) // 2)
+
+    def test_标定的其余三项不受影响(self):
+        """⚠️ 加参数**不能改已有的行为**（回归护栏）。"""
+        a = self._cal(nets=None)
+        b = self._cal()
+        for k in ("min_presence", "turnover_lo", "turnover_hi",
+                  "max_drawdown", "min_presence_vacuous",
+                  "turnover_lo_vacuous"):
+            self.assertEqual(a[k], b[k], f"{k} 变了")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

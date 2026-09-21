@@ -399,5 +399,51 @@ class TestVersusOldMetric(unittest.TestCase):
         self.assertGreater(v["ci"][0], 0)
 
 
+class TestSegmentOffsetRobustness(unittest.TestCase):
+    """⭐ `offset` = 本项目里的**稳健性旋钮**（相当于别的实验的"换种子"）。
+
+    本设计没有随机性，唯一的"任意选择"就是**从哪一根开始切段**。
+    单靠一组窗口得出的结论，与"单标的"一样不可靠。
+    """
+
+    def test_偏移真的换了窗口(self):
+        from tw.segmented import segment_ranges
+        a = segment_ranges(200, 8, min_history=12, offset=0)
+        b = segment_ranges(200, 8, min_history=12, offset=4)
+        self.assertNotEqual(a, b)
+        # 而且**没有一段是同一段**（起点全不同）
+        self.assertEqual(set(a) & set(b), set())
+
+    def test_偏移不改变段长与历史可见量(self):
+        from tw.segmented import segment_ranges
+        for off in range(8):
+            rs = segment_ranges(200, 8, min_history=12, offset=off)
+            for lo, hi in rs:
+                self.assertEqual(hi - lo + 1, 8)
+                self.assertGreaterEqual(lo, 12)   # 历史始终够
+
+    def test_偏移为0时与旧行为逐段相同(self):
+        """⚠️ 回归护栏：新参数**不能改变默认行为**。"""
+        from tw.segmented import segment_ranges
+        self.assertEqual(segment_ranges(200, 8, min_history=12),
+                         segment_ranges(200, 8, min_history=12, offset=0))
+
+    def test_偏移过大要报错(self):
+        """⚠️ **必须挡住 `offset >= seg_len`**：那是把同一组窗口整体平移，
+        不是"换一组窗口" ⇒ 会给出**假的稳健性**（看起来验了，其实没验）。"""
+        from tw.segmented import segment_ranges
+        for bad in (8, 9, -1):
+            with self.assertRaises(ValueError):
+                segment_ranges(200, 8, min_history=12, offset=bad)
+
+    def test_段数随偏移变化(self):
+        """尾部会少掉最多一段（不同 offset 段数可能差 1）——
+        这不是 bug，但配对比较时要知道两个 run 的段数可能不同。"""
+        from tw.segmented import segment_ranges
+        ns = {len(segment_ranges(203, 8, min_history=12, offset=o))
+              for o in range(8)}
+        self.assertLessEqual(max(ns) - min(ns), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1631,7 +1631,7 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
         [
             (
                 'tw/segmented.py',
-                '    lo = max(0, int(min_history))\n',
+                '    lo = max(0, int(min_history)) + int(offset)\n',
                 '    lo = 0\n',
             ),
         ],
@@ -1865,6 +1865,38 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
                 'tw/reflect.py',
                 '            "condition": safe_condition(e.get("condition")),\n',
                 '            "condition": dict(e.get("condition") or {}),\n',
+            ),
+        ],
+    ),
+    (
+        'M115',
+        '收益目标**退回固定值**（不用基线的净收益分位标定）'
+        '——于是它不随窗口长度缩放：L=8 时要求 8 根赚 1% ⇒ '
+        '**48/48 段全部 `return` 失败**，模型每一次都被告知"你还差得远"。'
+        '⚠️ 症状是"实验照跑照出数字"，而那批数据实际测的是'
+        '「**目标不可达**时它会怎么做」，不是「给目标好不好」。'
+        '⭐ 这是被 KPI 判定数据自己暴露的：一个"目标"若 100% 不达标，'
+        '那就不是目标，是噪音',
+        [
+            (
+                'tw/kpi.py',
+                '        out["target_return"] = tgt\n',
+                '        out["target_return"] = 0.01\n',
+            ),
+        ],
+    ),
+    (
+        'M116',
+        '分段落偏移**去掉 `[0, seg_len)` 的守卫**——于是 `offset = seg_len` '
+        '这类取值会被接受，而它只是把**同一组窗口整体平移**（丢掉开头几段），'
+        '**不是"换一组窗口"** ⇒ 项目会以为做了稳健性检验，实际上什么都没验。'
+        '⚠️ 这类"看起来验了、其实没验"的假稳健性，比不做检验更危险——'
+        '因为它会让人放心地下结论',
+        [
+            (
+                'tw/segmented.py',
+                '    if not (0 <= int(offset) < int(seg_len)):\n',
+                '    if False:\n',
             ),
         ],
     ),
