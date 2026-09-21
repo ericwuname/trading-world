@@ -1550,6 +1550,86 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    # ==================================================================
+    # A6：多段配对度量（2026-09-21 第十二轮）
+    # ==================================================================
+    (
+        'M97',
+        '配对检验在 σ=0（差值完全一致）时仍走一般分支'
+        '——`se = s/√n if s > 0 else nan` ⇒ 区间 (nan, nan) ⇒ '
+        '`nan > 0` 与 `nan < 0` 都是 False ⇒ 落进「依然无法判定」。'
+        '**方向正好相反**：一致性最强（完美一致的效应）的时候说"判不出来"。'
+        '而成本倍数这类**确定性**效应正是在 σ≈0 时被观测到的'
+        '——「把结论弄反」的静默错误',
+        [
+            (
+                'tw/segmented.py',
+                '    if s == 0.0:\n'
+                '        se = 0.0\n'
+                '        half = 0.0\n'
+                '        lo = hi = m\n',
+                '    if False:\n'
+                '        se = 0.0\n'
+                '        half = 0.0\n'
+                '        lo = hi = m\n',
+            ),
+        ],
+    ),
+    (
+        'M98',
+        '多段跑批**跨段复用同一个账户**（账户提到段循环外面）'
+        '——前一段的持仓会带进下一段 ⇒ 段与段不再独立，'
+        '而"段独立"正是这个新度量效能高的**唯一来源**。'
+        '症状很隐蔽：数字照样出，只是区间偏窄、更容易"判出显著"',
+        [
+            (
+                'tw/segmented.py',
+                '    for k, (s, e) in enumerate(ranges):\n'
+                '        per_net: dict[str, float] = {}\n'
+                '        per_run: dict[str, RunResult] = {}\n'
+                '        for name, mk in factories.items():\n'
+                '            acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n',
+                '    _hoisted = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n'
+                '    for k, (s, e) in enumerate(ranges):\n'
+                '        per_net: dict[str, float] = {}\n'
+                '        per_run: dict[str, RunResult] = {}\n'
+                '        for name, mk in factories.items():\n'
+                '            acc = _hoisted\n',
+            ),
+        ],
+    ),
+    (
+        'M100',
+        '同一段内**各配置共用一个账户**（账户提到配置循环外面但仍在段内）'
+        '——先跑的配置的成交会改变后跑的配置的权益 ⇒ **配对就配错了**：'
+        'B 的成绩里混进了 A 的盈亏。'
+        '⚠️ 这一条是 M98 第一次**漏网**时暴露出来的真测试缺口：'
+        '我当时只检查了"跨段是否新建"，没检查"同段内各配置是否各用各的"',
+        [
+            (
+                'tw/segmented.py',
+                '        for name, mk in factories.items():\n'
+                '            acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n',
+                '        _seg_acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n'
+                '        for name, mk in factories.items():\n'
+                '            acc = _seg_acc\n',
+            ),
+        ],
+    ),
+    (
+        'M99',
+        '切段时第 0 段不留历史（从 0 开始而不是 min_history）'
+        '——第 0 段的 `recent_closes` 会比别的段短 ⇒ **各段输入不等价**，'
+        '配对的前提（"同一段上两个配置看到同样的东西"）在跨段意义上被破坏，'
+        '而它不会被任何单段检查发现',
+        [
+            (
+                'tw/segmented.py',
+                '    lo = max(0, int(min_history))\n',
+                '    lo = 0\n',
+            ),
+        ],
+    ),
 
 ]
 

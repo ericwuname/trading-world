@@ -31,9 +31,10 @@ simexec.py     **A4** 逐根 K 线执行模拟（bar 级成交的四个假设**�
 policy.py      **A4** 同信息规则基线（noop / momentum / meanrevert / random_taker）
 agent_run.py   **A4** 完整回路：Agent + 风控 + 执行 + 账本，账户状态回流到下次决策
 eval_agent.py  **A4** 分层评估：决策层 / 执行层 / 结果层 + 成本敏感性 + 区间重叠检验
+segmented.py   **A6** 多段独立运行 + 同段配对检验（换掉判不出来的"每根均值"）
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from .account import MarginAccount, MarginConfig, Position
 from .agent import (
@@ -101,6 +102,16 @@ from .policy import (
 )
 from .prompts import DEFAULT_TEMPLATE, TEMPLATES, build_messages
 from .risk import RiskDecision, RiskLimits, check, is_decision_bar
+from .segmented import (
+    SegmentedRuns,
+    min_detectable_effect,
+    paired_verdict,
+    power_analysis,
+    run_paired_segments,
+    segment_correlation,
+    segment_ranges,
+    sensitivity_check,
+)
 from .scenarios import SCENARIOS, Scenario, get_scenario, list_scenarios
 from .simexec import BarExecutor, ExecConfig, Fill, bars_from_series
 from .strategy import Strategy, StrategyContext, make_strategy
@@ -208,5 +219,14 @@ __all__ = [
     "block_bootstrap_ci",
     "max_drawdown",
     "sharpe",
+    # A6：多段配对度量（换掉判不出来的那个）
+    "segment_ranges",
+    "SegmentedRuns",
+    "run_paired_segments",
+    "paired_verdict",
+    "segment_correlation",
+    "power_analysis",
+    "min_detectable_effect",
+    "sensitivity_check",
     "__version__",
 ]
