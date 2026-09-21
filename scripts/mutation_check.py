@@ -1219,6 +1219,126 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    # ==================================================================
+    # A3：LLM 接入 + prompt 模板 + 解析（2026-09-21 第九轮）
+    # 这批的目标全是**静默失效**：不报错、结果看起来正常、
+    # 只有逐条核对或变异测试才分得出来。
+    # ==================================================================
+    (
+        'M78',
+        '缺 LLM key 时静默返回 hold 而不是报错'
+        '——这是最难发现的一类：跑起来完全正常（每条决策都合规、都留痕、'
+        '都带理由），只是这个 Agent **永远不交易**。它把"系统是坏的"'
+        '伪装成"Agent 很保守"，而收益率曲线看起来只是"没机会"',
+        [
+            (
+                'tw/llm.py',
+                '        if self.config.api_key_env and not self.api_key:\n'
+                '            raise RuntimeError(\n',
+                '        if False:\n'
+                '            raise RuntimeError(\n',
+            ),
+        ],
+    ),
+    (
+        'M79',
+        '解析层"帮模型把量级改回来"（10350 → 103.5）'
+        '——看起来像是善意修正，实际把"模型在数值上不可靠"这个事实'
+        '从数据里抹掉；而那正是最该被量化的东西。'
+        '把关的责任在风控层，不在解析层：解析层只翻译，不审校',
+        [
+            (
+                'tw/parse.py',
+                '    for key in ("sz", "px", "tp", "sl"):\n'
+                '        if key in parsed:\n'
+                '            parsed[key] = _to_float(parsed[key])\n',
+                '    for key in ("sz", "px", "tp", "sl"):\n'
+                '        if key in parsed:\n'
+                '            parsed[key] = _to_float(parsed[key])\n'
+                '            if key in ("tp", "sl") and parsed[key]:\n'
+                '                parsed[key] = parsed[key] / 100.0\n',
+            ),
+        ],
+    ),
+    (
+        'M80',
+        '回放按 prompt 只存**最后一条**响应（覆盖式索引）'
+        '——多采样时同一 prompt 调用 N 次，覆盖后只剩最后 1 条，'
+        '回放时 N 次全发那一条 ⇒ 真实的"2 hold / 1 buy"变成"3 buy"，'
+        '**多数派方向整个反过来**。而覆盖率仍显示 100%、零报错。'
+        '这个 bug 真的活过一轮，靠逐条比对 live/replay 才发现',
+        [
+            (
+                'tw/llm.py',
+                '                        self._by_hash.setdefault(str(h), []).append(rec)\n',
+                '                        self._by_hash[str(h)] = [rec]\n',
+            ),
+        ],
+    ),
+    (
+        'M81',
+        '可见状态用"序列末尾 N 根"而不是"截至 i 的 N 根"'
+        '——`close[-N:]` 取的是序列末尾；调用方把整条序列传进来、'
+        'i 停在中间（回放历史某一天）时，它会取到**未来**的根。'
+        '不报错，只会让那一天的决策"神奇地准"',
+        [
+            (
+                'tw/agent.py',
+                '    lo = max(0, i - int(n_closes) + 1)\n'
+                '    rc = [float(x) for x in closes[lo:i + 1]]\n',
+                '    rc = [float(x) for x in closes[-int(n_closes):]]\n',
+            ),
+        ],
+    ),
+    (
+        'M82',
+        'mid 取 (high+low)/2 而不是收盘价'
+        '——high/low 是**事后才知道**的极值，用它们当 mid 等于把'
+        '"这根 K 线内最高能到哪"提前告诉模型。'
+        '数据全在同一根 K 线里，看起来"不过分"，其实是最隐蔽的一类泄漏',
+        [
+            (
+                'tw/agent.py',
+                '    mid = float(closes[i])\n',
+                '    _hl = getattr(series, "high", None), getattr(series, "low", None)\n'
+                '    mid = (float(_hl[0][i]) + float(_hl[1][i])) / 2.0\n',
+            ),
+        ],
+    ),
+    (
+        'M83',
+        '多采样全失败时把 `majority_sample` 造的兜底 hold 写进 `parsed`'
+        '——那条兜底的 action 也是 "hold"，于是"全部解析失败"'
+        '被读成"解析成功"（判据看最终 parsed 而不是采样列表）。'
+        '造一个看起来合法的兜底值，是"把故障伪装成正常"的标准形态',
+        [
+            (
+                'tw/agent.py',
+                '        n_ok = sum(1 for p in parsed_list if p.get("action"))\n'
+                '        vote = consistency(parsed_list)\n',
+                '        n_ok = sum(1 for p in parsed_list if p.get("action"))\n'
+                '        vote = consistency(parsed_list)\n'
+                '        if n_ok == 0:\n'
+                '            n_ok = 1\n',
+            ),
+        ],
+    ),
+    (
+        'M84',
+        '给模型的"建议最大量"用全精度而不是向下取整'
+        '——模型会照抄但那串数字有 17 位有效数字，它写 6 位小数就**比上限大**，'
+        '于是触发 size_cap。`resized_frac` 是给风控算功劳的指标，'
+        '被纯四舍五入抬高 = 给风控记了一笔假功劳',
+        [
+            (
+                'tw/agent.py',
+                '        exp = math.floor(math.log10(raw)) - 1\n'
+                '        step = 10.0 ** exp\n'
+                '        return max(step, math.floor(raw / step) * step)\n',
+                '        return raw\n',
+            ),
+        ],
+    ),
 
 ]
 

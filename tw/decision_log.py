@@ -193,12 +193,33 @@ class DecisionRecord:
 
     # ------------------------------------------------------------------
     def summary_line(self) -> str:
-        """一行摘要，给人工快速扫（不用于机器解析）。"""
+        """一行摘要，给人工快速扫（不用于机器解析）。
+
+        ⚠️ 四种"没成交"要**分开显示**——它们的含义完全不同，
+        而一行摘要正是人最快看到的地方：
+
+        ====================  ==============================
+        情形                   显示
+        ====================  ==============================
+        解析失败               ``[解析失败]``
+        被风控拒               ``[被拒 TW-xxxx]``
+        主动弃权（合法）        ``[弃权]``
+        成交但被裁过量          ``[改量→x]``
+        ====================  ==============================
+
+        一开始这三种都被写成了 ``[未执行 risk]``，而"弃权"与"被拒"
+        混在一起会让人以为风控很激进（其实它什么都没做）。
+        """
         act = self.parsed.get("action", "?")
         reason = str(self.parsed.get("reason", ""))[:48]
         tail = ""
-        if not self.executed:
-            tail = f" [未执行 {self.reject_code or 'risk'}]"
+        if not self.parse_ok:
+            tail = " [解析失败]"
+        elif not self.executed:
+            if self.risk.get("accepted") and act == "hold":
+                tail = " [弃权]"
+            else:
+                tail = f" [被拒 {self.reject_code or 'risk'}]"
         elif self.risk.get("resized_to") is not None:
             tail = f" [改量→{self.risk['resized_to']}]"
         return f"t={self.tick:<6} {act:<4} {reason}{tail}"
@@ -209,12 +230,15 @@ class DecisionRecord:
 # ======================================================================
 #: 决策时**应当**可见的字段。用来做"点对点上下文"检查——
 #: 少记一个字段，回放就会退化（见模块文档 ②）。
-REQUIRED_VISIBLE_KEYS: tuple[str, ...] = ("mid", "fundamental")
+#: ⚠️ 只有 ``mid``：``fundamental``（基本面价值）是 **ABM 世界的概念**，
+#: 真实市场（OKX K 线）里并不存在。把它列为必需会让"用真实数据跑的
+#: 决策记录"永远缺字段，于是这条检查退化成噪声。它改为"建议"级。
+REQUIRED_VISIBLE_KEYS: tuple[str, ...] = ("mid",)
 
 #: 建议可见的字段（缺了不报错，但要能看出来缺）。
 RECOMMENDED_VISIBLE_KEYS: tuple[str, ...] = (
-    "spread_bp", "best_bid", "best_ask", "inventory", "cash",
-    "equity", "margin_ratio", "funding_rate", "recent_closes",
+    "spread_bp", "best_bid", "best_ask", "mark", "inventory", "cash",
+    "equity", "margin_ratio", "funding_rate", "recent_closes", "fundamental",
 )
 
 
@@ -248,10 +272,17 @@ def _is_leaky_key(key: str) -> bool:
 def build_visible_state(
     *,
     mid: float | None = None,
-    fundamental: float,
+    #: 基本面价值。**ABM 世界才有**（真实市场没有这个概念）⇒ 可选。
+    #: 真实数据上留空即可；强行填一个 mid 会在留痕里制造一个假字段，
+    #: 而"当时到底知不知道基本面"这个问题就再也答不了了。
+    fundamental: float | None = None,
     spread_bp: float | None = None,
     best_bid: float | None = None,
     best_ask: float | None = None,
+    #: 标记价。**是公开数据**（OKX ``/public/mark-price``，免鉴权），
+    #: 决策当时真的能看到，所以放在这里不是泄漏。强平/TP-SL 的触发
+    #: 基准价也用它（见 ``order_model`` 的 ``triggerPxType="mark"``）。
+    mark: float | None = None,
     inventory: float = 0.0,
     cash: float = 0.0,
     equity: float | None = None,
@@ -278,17 +309,24 @@ def build_visible_state(
         )
     st: dict[str, Any] = {
         "mid": float(mid) if mid is not None else None,
-        "fundamental": float(fundamental),
         "inventory": float(inventory),
         "cash": float(cash),
         "funding_rate": float(funding_rate),
     }
+    # ⚠️ fundamental 只在**真给了**的时候才写进去。
+    # 写 `float(fundamental)` 会在 None 时抛错；写 `float(fundamental or 0)`
+    # 则会在留痕里制造一个 "fundamental=0" 的假事实——
+    # 而"当时到底有没有这个信息"这个问题就再也答不了了。
+    if fundamental is not None:
+        st["fundamental"] = float(fundamental)
     if spread_bp is not None:
         st["spread_bp"] = float(spread_bp)
     if best_bid is not None:
         st["best_bid"] = float(best_bid)
     if best_ask is not None:
         st["best_ask"] = float(best_ask)
+    if mark is not None:
+        st["mark"] = float(mark)
     if equity is not None:
         st["equity"] = float(equity)
     if margin_ratio is not None:
@@ -496,6 +534,14 @@ def log_stats(recs: list[DecisionRecord]) -> dict[str, Any]:
     n_exec = sum(1 for r in recs if r.executed)
     n_hold = sum(1 for r in recs if r.parsed.get("action") == "hold")
     n_resized = sum(1 for r in recs if r.risk.get("resized_to") is not None)
+    #: ⭐ 只统计**实质**裁剪。模型照抄"建议最大量"时的四舍五入会
+    #: 触发 `size_cap`（量确实超了上限一丁点），但那不是风控干预。
+    #: 把它算进去 = 给风控记假功劳，而"风控贡献了多少"是 A4 要报的指标。
+    n_resized_material = sum(
+        1 for r in recs
+        if r.risk.get("resized_to") is not None
+        and r.risk.get("resize_is_material", True)
+    )
     n_reject = sum(1 for r in recs if r.reject_code)
     n_filled = sum(1 for r in recs if r.outcome_filled)
     n_multi = sum(1 for r in recs if int(r.n_samples) > 1)
@@ -515,7 +561,8 @@ def log_stats(recs: list[DecisionRecord]) -> dict[str, Any]:
         "parse_ok_frac": pct(n_parse_ok),
         "executed_frac": pct(n_exec),
         "abstain_frac": pct(n_hold),
-        "resized_frac": pct(n_resized),
+        "resized_frac": pct(n_resized_material),
+        "resized_any_frac": pct(n_resized),
         "rejected_frac": pct(n_reject),
         "outcome_filled_frac": pct(n_filled),
         "multi_sample_frac": pct(n_multi),

@@ -124,15 +124,38 @@ class TestSerialization(unittest.TestCase):
         self.assertIn("buy", r.summary_line())
         self.assertIn("趋势向上", r.summary_line())
 
-    def test_summary_line_标记未执行(self):
+    def test_summary_line_标记被拒(self):
         r = _rec(parsed={"action": "buy"}, executed=False, reject_code="TW-1005")
-        self.assertIn("未执行", r.summary_line())
+        self.assertIn("被拒", r.summary_line())
         self.assertIn("TW-1005", r.summary_line())
 
     def test_summary_line_标记改量(self):
         r = _rec(parsed={"action": "buy"}, executed=True,
                  risk={"resized_to": 0.5})
         self.assertIn("改量", r.summary_line())
+
+    def test_summary_line_四种未成交要分开(self):
+        """⭐ 回归守卫（真机跑出来的）。
+
+        一开始"弃权"和"被拒"都显示成 ``[未执行 risk]``——
+        而它们含义完全相反：弃权是 Agent 的决定，被拒是风控的决定。
+        混在一起看会让人以为风控很激进（其实它什么都没做）。
+        """
+        cases = {
+            "解析失败": _rec(parsed={"action": "hold"}, executed=False,
+                          parse_ok=False),
+            "被拒": _rec(parsed={"action": "hold"}, executed=False,
+                       reject_code="TW-1005"),
+            "弃权": _rec(parsed={"action": "hold"}, executed=False,
+                       risk={"accepted": True}),
+        }
+        got = {k: v.summary_line() for k, v in cases.items()}
+        for label, tag in (("解析失败", "[解析失败]"), ("被拒", "[被拒"),
+                           ("弃权", "[弃权]")):
+            with self.subTest(label=label):
+                self.assertIn(tag, got[label])
+        # 三者互不相同（否则"分开显示"是假的）
+        self.assertEqual(len(set(got.values())), 3, got)
 
 
 # ======================================================================
@@ -389,10 +412,25 @@ class TestLogStats(unittest.TestCase):
         self.assertAlmostEqual(s["outcome_filled_frac"], 0.5)
 
     def test_incomplete_visible_是回放会退化的信号(self):
-        good = _rec(tick=0, visible_state={"mid": 1.0, "fundamental": 1.0})
-        bad = _rec(tick=1, visible_state={"mid": 1.0})   # 缺 fundamental
+        """缺**必需**字段算不完整。
+
+        ⚠️ 判据从 ``REQUIRED_VISIBLE_KEYS`` 现取，不写死字段名——
+        曾经这里写死 ``fundamental``，而它后来被改成可选
+        （真实市场没有基本面价值，写死会让真实数据 100% 判"不完整"，
+        这个指标就退化成噪声）。写死字段名的测试会跟着一起退化。
+        """
+        req = REQUIRED_VISIBLE_KEYS[0]
+        good = _rec(tick=0, visible_state={"mid": 1.0, req: 1.0})
+        bad = _rec(tick=1, visible_state={})
         s = log_stats([good, bad])
         self.assertAlmostEqual(s["incomplete_visible_frac"], 0.5)
+
+    def test_可选字段缺失不算不完整(self):
+        """⭐ ``fundamental`` 是 ABM 概念，真实数据上必然缺——
+        它**不能**被算成"回放会退化"。"""
+        rec = _rec(tick=0, visible_state={"mid": 1.0})
+        s = log_stats([rec])
+        self.assertAlmostEqual(s["incomplete_visible_frac"], 0.0)
 
     def test_延迟分位(self):
         recs = [_rec(tick=i, latency_ms=v) for i, v in enumerate([10, 20, 30, 40])]

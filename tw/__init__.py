@@ -23,16 +23,38 @@ order_model.py **A1** OKX 风格订单模型：tdMode / posSide / reduceOnly / �
 account.py     **A1** 保证金账户账本：分档 MMR / 多空强平价 / 穿仓反手
 decision_log.py **A2** 决策留痕：证据链六项 + 确定性 decision_id + JSONL
 risk.py        **A2** 风控闸门：数值 / 方向 / 量 / 保证金；**只有量上限会裁剪**
+llm.py         **A3** LLM 通道：真机 / 回放 / 脚本化三种实现，缺 key 必须报错
+prompts.py     **A3** 版本化 prompt 模板（改模板必须加版本，否则归因失效）
+parse.py       **A3** 容错解析：只翻译不修正；解析失败也留痕
+agent.py       **A3** 决策回路：可见状态 → prompt → LLM → 解析 → 风控 → 订单意图
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .account import MarginAccount, MarginConfig, Position
+from .agent import (
+    AgentConfig,
+    SessionResult,
+    TradingAgent,
+    run_session,
+    visible_from_series,
+)
 from .book import OrderBook
 from .config import Population, SimConfig
 from .decision_log import DecisionLog, DecisionRecord, build_visible_state, log_stats
 from .engine import MatchingEngine
 from .eval import evaluate, format_table, markout, mid_series, pnl_breakdown
+from .llm import (
+    HTTPClient,
+    LLMClient,
+    LLMConfig,
+    LLMResponse,
+    Recorder,
+    ReplayClient,
+    ScriptedClient,
+    make_client,
+    prompt_hash,
+)
 from .market import Market, run_simulation
 from .order_model import (
     AlgoOrder,
@@ -41,6 +63,14 @@ from .order_model import (
     apply_reduce_only,
     precheck,
 )
+from .parse import (
+    ParseResult,
+    consistency,
+    decision_signature,
+    majority_sample,
+    parse_decision,
+)
+from .prompts import DEFAULT_TEMPLATE, TEMPLATES, build_messages
 from .risk import RiskDecision, RiskLimits, check, is_decision_bar
 from .scenarios import SCENARIOS, Scenario, get_scenario, list_scenarios
 from .strategy import Strategy, StrategyContext, make_strategy
@@ -97,5 +127,28 @@ __all__ = [
     "RiskDecision",
     "check",
     "is_decision_bar",
+    # A3：LLM 通道 + 模板 + 解析 + 决策回路
+    "LLMConfig",
+    "LLMResponse",
+    "LLMClient",
+    "HTTPClient",
+    "ScriptedClient",
+    "ReplayClient",
+    "Recorder",
+    "make_client",
+    "prompt_hash",
+    "TEMPLATES",
+    "DEFAULT_TEMPLATE",
+    "build_messages",
+    "ParseResult",
+    "parse_decision",
+    "consistency",
+    "decision_signature",
+    "majority_sample",
+    "AgentConfig",
+    "TradingAgent",
+    "SessionResult",
+    "run_session",
+    "visible_from_series",
     "__version__",
 ]

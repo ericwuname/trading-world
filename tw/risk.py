@@ -101,6 +101,17 @@ class RiskDecision:
     accepted: bool = False
     #: 裁剪后的量。None = 没有裁剪（或整单被拒）。
     resized_to: float | None = None
+    #: ⭐ 这次裁剪是否**实质**（而不是模型把"建议最大量"四舍五入了一下）。
+    #:
+    #: 为什么必须单独记：实测真机跑时，模型会**照抄**提示词里的
+    #: "建议最大量"，而那个数有 17 位有效数字（``0.24730285325666945``），
+    #: 模型写成 ``0.247303`` —— 比上限大了约 1e-5 的相对量。
+    #: 不做区分的话，``resized_frac`` 会被这种纯四舍五入抬高，
+    #: 而这个指标是**用来量化"风控贡献了多少"的**（A4 要报）——
+    #: 把四舍五入算成风控干预，等于给风控记了一笔假功劳。
+    #: ⇒ 两个事实都要留：量确实被夹了（正确性），
+    #: 但这次不算干预（归因）。**正确性和归因是两件事。**
+    resize_is_material: bool = True
     #: 拒单码（``order_model.REJECT_CODES`` 里的键）。
     code: str = ""
     #: 触发的主要规则名（用于分组统计）。
@@ -115,6 +126,7 @@ class RiskDecision:
         return {
             "accepted": bool(self.accepted),
             "resized_to": self.resized_to,
+            "resize_is_material": bool(self.resize_is_material),
             "code": self.code,
             "rule": self.rule,
             "notes": list(self.notes),
@@ -125,6 +137,16 @@ def _hold(reason: str) -> dict[str, Any]:
     """退回 hold 的解析结果。**必须带理由**（弃权要评分）。"""
     return {"action": "hold", "sz": 0.0, "px": None, "tp": None, "sl": None,
             "reason": reason, "confidence": 0.0, "downgraded_from": ""}
+
+
+#: 小于这个**相对**幅度的裁剪，算"四舍五入噪声"而不是风控干预。
+#:
+#: 标定依据：实测模型会照抄提示词里的"建议最大量"，而那个数有 17 位
+#: 有效数字，模型写 6 位小数 ⇒ 相对超出约 1e-5。取 1e-4 留一个数量级
+#: 余量。⚠️ 不要再放大这个阈值：10% 的裁剪是**真**干预，
+#: 而把 10% 判成噪声会让"风控贡献"这个指标失真——宁可漏判噪声，
+#: 不可错判干预。
+_MATERIAL_RESIZE_EPS = 1e-4
 
 
 # ======================================================================
@@ -323,10 +345,23 @@ def check(
         new_sz = cap / mid
         d.resized_to = float(new_sz)
         d.rule = "size_cap"
-        d.note(
-            f"名义价值 {notional:,.2f} > 上限 {cap:,.2f}；"
-            f"量 {sz:g} → {new_sz:g}（原请求 {sz:g} 留痕）"
-        )
+        # ⭐ 区分"实质裁剪"与"四舍五入噪声"（见 ``RiskDecision.resize_is_material``）。
+        # 判据是**相对**幅度，不是绝对量：0.001 手对 1 手是大裁剪，
+        # 对 1,000,000 手是噪声；而阈值必须比典型浮点误差
+        # （~1e-16 相对）大几个数量级，否则永远判不出"实质"。
+        rel = (sz - new_sz) / sz if sz > 0 else 0.0
+        d.resize_is_material = rel > _MATERIAL_RESIZE_EPS
+        if d.resize_is_material:
+            d.note(
+                f"名义价值 {notional:,.2f} > 上限 {cap:,.2f}；"
+                f"量 {sz:g} → {new_sz:g}（原请求 {sz:g} 留痕）"
+            )
+        else:
+            d.note(
+                f"量 {sz:g} 仅超上限 {rel:.2e}（相对）——"
+                f"属四舍五入噪声，夹到 {new_sz:g}；"
+                f"**不计入风控干预**（resize_is_material=False）"
+            )
         sz = float(new_sz)
         notional = sz * mid
         d.note(f"裁剪后名义价值 {notional:,.2f} ≤ 上限 {cap:,.2f}")
