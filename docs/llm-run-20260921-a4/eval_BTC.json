@@ -13,9 +13,9 @@
     "slippage_bps": 1.0,
     "cost_multipliers": "1,2,5",
     "rules_only": false,
-    "replay": "out/a4/rec_BTC.jsonl",
+    "replay": "docs/llm-run-20260921-a4/rec_BTC.jsonl.gz",
     "record": "",
-    "out_json": "out/a4/eval_BTC.json",
+    "out_json": "docs/llm-run-20260921-a4/eval_BTC.json",
     "out_log": "",
     "seed": 12345
   },
@@ -27,7 +27,7 @@
       "run_id": "a4-noop",
       "meta": {
         "agent_id": "llm-agent-1",
-        "template": "v1",
+        "template": "v2",
         "policy": "noop",
         "mode": "baseline_rule",
         "n_samples": 1,
@@ -62,7 +62,25 @@
         "confidence_p50": 0.0,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
-        "external_ref_frac": 0.0
+        "external_ref_frac": 0.0,
+        "basis": {
+          "n": 120,
+          "n_declared": 0,
+          "counts": {
+            "": 120
+          },
+          "frac": {
+            "": 1.0
+          },
+          "frac_of_declared": {},
+          "labels": {
+            "rule": "照指标执行",
+            "judgment": "凭自己判断",
+            "both": "两者结合",
+            "": "未自报"
+          },
+          "caveat": "这是**模型自报**的依据，不是测出来的；只作声明看。"
+        }
       },
       "execution": {
         "n_decisions": 120,
@@ -95,7 +113,7 @@
         "slippage_cost": 0.0,
         "turnover": 0.0,
         "turnover_x_equity": 0.0,
-        "sharpe": NaN,
+        "sharpe": null,
         "max_drawdown": 0.0,
         "n_bars": 121,
         "n_trades": 0,
@@ -175,7 +193,7 @@
       "run_id": "a4-momentum",
       "meta": {
         "agent_id": "llm-agent-1",
-        "template": "v1",
+        "template": "v2",
         "policy": "momentum12",
         "mode": "baseline_rule",
         "n_samples": 1,
@@ -210,7 +228,25 @@
         "confidence_p50": 0.5715117140239275,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
-        "external_ref_frac": 0.0
+        "external_ref_frac": 0.0,
+        "basis": {
+          "n": 120,
+          "n_declared": 0,
+          "counts": {
+            "": 120
+          },
+          "frac": {
+            "": 1.0
+          },
+          "frac_of_declared": {},
+          "labels": {
+            "rule": "照指标执行",
+            "judgment": "凭自己判断",
+            "both": "两者结合",
+            "": "未自报"
+          },
+          "caveat": "这是**模型自报**的依据，不是测出来的；只作声明看。"
+        }
       },
       "execution": {
         "n_decisions": 120,
@@ -362,7 +398,7 @@
       "run_id": "a4-meanrevert",
       "meta": {
         "agent_id": "llm-agent-1",
-        "template": "v1",
+        "template": "v2",
         "policy": "meanrevert12",
         "mode": "baseline_rule",
         "n_samples": 1,
@@ -397,7 +433,25 @@
         "confidence_p50": 0.5715117140239275,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
-        "external_ref_frac": 0.0
+        "external_ref_frac": 0.0,
+        "basis": {
+          "n": 120,
+          "n_declared": 0,
+          "counts": {
+            "": 120
+          },
+          "frac": {
+            "": 1.0
+          },
+          "frac_of_declared": {},
+          "labels": {
+            "rule": "照指标执行",
+            "judgment": "凭自己判断",
+            "both": "两者结合",
+            "": "未自报"
+          },
+          "caveat": "这是**模型自报**的依据，不是测出来的；只作声明看。"
+        }
       },
       "execution": {
         "n_decisions": 120,
@@ -549,7 +603,7 @@
       "run_id": "a4-random_taker",
       "meta": {
         "agent_id": "llm-agent-1",
-        "template": "v1",
+        "template": "v2",
         "policy": "random_taker",
         "mode": "baseline_rule",
         "n_samples": 1,
@@ -584,7 +638,25 @@
         "confidence_p50": 0.0,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
-        "external_ref_frac": 0.0
+        "external_ref_frac": 0.0,
+        "basis": {
+          "n": 120,
+          "n_declared": 0,
+          "counts": {
+            "": 120
+          },
+          "frac": {
+            "": 1.0
+          },
+          "frac_of_declared": {},
+          "labels": {
+            "rule": "照指标执行",
+            "judgment": "凭自己判断",
+            "both": "两者结合",
+            "": "未自报"
+          },
+          "caveat": "这是**模型自报**的依据，不是测出来的；只作声明看。"
+        }
       },
       "execution": {
         "n_decisions": 120,
@@ -771,7 +843,25 @@
         "confidence_p50": 0.65,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
-        "external_ref_frac": 0.0
+        "external_ref_frac": 0.0,
+        "basis": {
+          "n": 120,
+          "n_declared": 0,
+          "counts": {
+            "": 120
+          },
+          "frac": {
+            "": 1.0
+          },
+          "frac_of_declared": {},
+          "labels": {
+            "rule": "照指标执行",
+            "judgment": "凭自己判断",
+            "both": "两者结合",
+            "": "未自报"
+          },
+          "caveat": "这是**模型自报**的依据，不是测出来的；只作声明看。"
+        }
       },
       "execution": {
         "n_decisions": 120,
@@ -951,8 +1041,8 @@
           0.0,
           0.0
         ],
-        "overlap_length": NaN,
-        "overlap_fraction": NaN,
+        "overlap_length": null,
+        "overlap_fraction": null,
         "point_diff": -1.5366758237942794e-06,
         "verdict": "依然无法判定",
         "direction": null,

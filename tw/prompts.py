@@ -42,11 +42,20 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
 #: 当前默认模板版本。**改模板必须加新版本**，见模块文档。
-DEFAULT_TEMPLATE = "v1"
+DEFAULT_TEMPLATE = "v2"
+
+#: v4 起输出里多一个「决策依据自报」字段。
+#: ⚠️ 它的作用是**让模型把自己的选择讲出来**——用户 2026-09-21 的问题
+#: 就是"它会照规则走，还是按主观判断"。没有这个字段，那个问题
+#: 只能靠人去读理由猜；有了它才**可统计**。
+#: ⚠️ 但它是**声明，不是证据**（模型可能为了显得一致而都写上）——
+#: 报告里必须这么写。
+BASIS_KEYS: tuple[str, ...] = ("rule", "judgment", "both")
 
 #: 输出字段的规范名（内部用）。模板里的 JSON 示例必须与之一致，
 #: 否则 parse 层要写一堆别名——别名的每一层都是"看起来对"的静默风险。
@@ -155,6 +164,117 @@ _USER_V2 = """## 你能看到什么（这是你的全部信息）
 请给出你在 **tick {tick}** 的决策。只输出 JSON。"""
 
 
+# ======================================================================
+# v3 用户提示 —— ⭐「给它算好的特征」
+# ======================================================================
+#: 算好的特征里各项的说明。**与 ``market_features`` 的键一一对应。**
+_FEATURE_ROWS: tuple[tuple[str, str], ...] = (
+    ("ret_lookback", "区间净变化"),
+    ("vol_pct", "区间涨跌幅标准差（每根）"),
+    ("pos_pctile", "当前价在区间里的位置（0=最低，1=最高）"),
+    ("ma_fast", "短均线（最近 3 根收盘均值）"),
+    ("ma_slow", "长均线（全部区间收盘均值）"),
+    ("ma_gap", "短均线相对长均线的偏离"),
+    ("last_ret", "最近一根的涨跌幅"),
+    ("up_frac", "区间里上涨根数占比"),
+)
+
+_USER_V3 = """## 你能看到什么（这是你的全部信息）
+
+以下数据全部来自 tick ≤ {tick} 的市场。**没有**未来数据。
+
+### 市场
+- 标的：{inst_id}（{bar} K 线）　当前 tick：{tick}
+- 中间价 mid：{mid}　标记价 mark：{mark}
+
+### 已为你算好的指标（由确定性代码从**下面那串收盘价**算出，直接可用）
+{features_txt}
+
+### 原始数据：最近 {n_closes} 根收盘价（旧 → 新）
+{recent_closes_txt}
+
+### 本次数据源**不提供**的信息
+{unavailable_txt}
+
+### 你的账户
+- 持仓：{position_txt}
+- 现金 cash：{cash}　权益 equity：{equity}
+- 保证金率 margin_ratio：{margin_ratio_txt}
+- 可用杠杆上限：{max_lever}x　建议最大量：{max_size} 张
+
+### 风控约束
+- 止盈止损相对 mid 的偏离不得超过 {max_tp_sl_pct_txt}
+- 单标的敞口上限：{max_inst_exposure_txt} 权益　单笔名义价值上限：{max_notional}
+
+请给出你在 **tick {tick}** 的决策。只输出 JSON。"""
+
+
+# ======================================================================
+# v4 系统提示 —— 在 v1 基础上**加一个「决策依据自报」字段**
+# ======================================================================
+_SYSTEM_V4 = _SYSTEM_V1.replace(
+    """{"action": "buy|sell|hold", "size": 数字, "order_type": "limit|market",
+ "limit_price": 数字或null, "take_profit": 数字或null, "stop_loss": 数字或null,
+ "confidence": 0到1的小数, "reason": "一句话中文理由"}""",
+    """{"action": "buy|sell|hold", "size": 数字, "order_type": "limit|market",
+ "limit_price": 数字或null, "take_profit": 数字或null, "stop_loss": 数字或null,
+ "confidence": 0到1的小数, "basis": "rule|judgment|both", "reason": "一句话中文理由"}""",
+).replace(
+    """- reason：为什么这么做。这是给人工审计看的，要具体（提到你依据了快照里的哪几项）""",
+    """- **basis：这次决策你**主要**依据了什么**。三选一，必须诚实填：
+  - `rule` = 主要照**算好的指标**执行
+  - `judgment` = 主要凭**自己对原始价格的主观判断**
+  - `both` = 两者结合、权重相当
+  这不是考核，也不会改变风控；**它只是把你的选择记下来供事后分析**。
+  两种方式**都是允许的**——请按你当时真实的做法填，不要为了显得一致而都写 both。
+- reason：为什么这么做。这是给人工审计看的，要具体（提到你依据了快照里的哪几项；若 basis=rule，请点出用了哪几个指标）""",
+)
+
+
+# ======================================================================
+# v4 用户提示 —— ⭐「两条路都给它，由它自己选」
+# ======================================================================
+_USER_V4 = """## 你能看到什么（这是你的全部信息）
+
+以下数据全部来自 tick ≤ {tick} 的市场。**没有**未来数据。
+
+### 市场
+- 标的：{inst_id}（{bar} K 线）　当前 tick：{tick}
+- 中间价 mid：{mid}　标记价 mark：{mark}
+
+## 你有两种决策方式，**由你自己选**（也可以结合）
+
+### 方式 A：照**已算好的指标**执行
+这些指标由确定性代码从下面的收盘价算出，你可以直接照着它们做规则式的判断：
+{features_txt}
+
+### 方式 B：凭**自己对原始价格**的判断
+- 最近 {n_closes} 根收盘价（旧 → 新）：
+{recent_closes_txt}
+
+### 怎么选
+两种方式**都可以**，没有哪种"更正确"：
+- 如果你认为指标已经足够表达当前形势 → 用 **A**（`basis`: `rule`）
+- 如果你认为指标丢掉了你想用的信息、或你有别的看法 → 用 **B**（`basis`: `judgment`）
+- 如果你想同时参考两者 → 用 **A+B**（`basis`: `both`）
+没有可算的指标时（样本不足），只能走 B。
+
+### 本次数据源**不提供**的信息
+{unavailable_txt}
+
+### 你的账户
+- 持仓：{position_txt}
+- 现金 cash：{cash}　权益 equity：{equity}
+- 保证金率 margin_ratio：{margin_ratio_txt}
+- 可用杠杆上限：{max_lever}x　建议最大量：{max_size} 张
+
+### 风控约束
+- 止盈止损相对 mid 的偏离不得超过 {max_tp_sl_pct_txt}
+- 单标的敞口上限：{max_inst_exposure_txt} 权益　单笔名义价值上限：{max_notional}
+
+请给出你在 **tick {tick}** 的决策。**别忘了填 `basis`**。只输出 JSON。"""
+
+
 TEMPLATES: dict[str, dict[str, str]] = {
     "v1": {"system": _SYSTEM_V1, "user": _USER_V1},
     # ------------------------------------------------------------------
@@ -177,6 +297,43 @@ TEMPLATES: dict[str, dict[str, str]] = {
     # 「v1 的成绩 vs v2 的成绩」这个问题从此算不出来。
     # ------------------------------------------------------------------
     "v2": {"system": _SYSTEM_V1, "user": _USER_V2},
+    # ------------------------------------------------------------------
+    # v3：⭐「给它算好的特征」（2026-09-21 用户拍板「要」）
+    #
+    # 触发原因（A4 的实测结论）：**LLM 输给了一行代码的 momentum**。
+    # 它要做的事是"从 12 个价格里判断方向"——而那正是规则最擅长的事。
+    # v3 检验的是：**如果直接把算好的指标给它，它会不会用？**
+    #
+    # ⚠️⚠️ **这改变了实验的性质，必须说清楚**：
+    #   · v1/v2 问的是「**模型能不能自己从原始价格里看出信号**」
+    #   · v3  问的是「**给出信号后，模型会不会用、用得对不对**」
+    # 这是两个不同的问题。v3 赢了**不能**推断"模型有行情判断力"，
+    # 只能推断"它在有现成信号时会照着做"。报告里必须分开写。
+    #
+    # 特征由 ``market_features()`` 用确定性代码算——**不是模型算的**。
+    # 这与本项目「LLM 只做决策、不做算数」那条边界一致。
+    # ------------------------------------------------------------------
+    "v3": {"system": _SYSTEM_V1, "user": _USER_V3},
+    # ------------------------------------------------------------------
+    # v4：⭐「两条路都给它，由它自己选」+ 自报依据
+    #      （2026-09-21 用户追加的设计——比我原来的 v3 更对）
+    #
+    # 用户的原话：
+    #   「分成 2 个部分，一个是算好特征，一个是自己能不能看出来，
+    #     我觉得都要，只是 LLM 选择而已，就像是人是按照既定规则执行，
+    #     还是按照当时的主观判断一样。」
+    #
+    # ⭐ 关键差别（v3 → v4）：
+    #   · v3 **我替它选了路**（给特征、并引导它用特征）
+    #   · v4 **把选择权交回去**：两条路都摆在面前，明确说"由你决定"，
+    #     并要求它**自报走了哪条**（`basis` 字段）。
+    #
+    # ⇒ v4 顺带把用户那个问题变成**可统计的**：
+    #   「LLM 会像人一样选择照规则还是凭判断吗」——看 `basis` 分布。
+    # ⚠️ 但 basis 是**声明不是证据**（模型可能都写 both 来显得一致），
+    #   所以报告里必须配合"两类行为的实际差异"一起看。
+    # ------------------------------------------------------------------
+    "v4": {"system": _SYSTEM_V4, "user": _USER_V4},
 }
 
 
@@ -243,6 +400,75 @@ def _unavailable_text(visible: dict[str, Any]) -> str:
     return "、".join(missing) + "——这些取决于数据源，缺失时请改用收盘价序列推断。"
 
 
+# ======================================================================
+# ⭐ v3 用：算好的特征（`market_features`）
+# ======================================================================
+def market_features(recent_closes: list[float]) -> dict[str, float]:
+    """从收盘价序列算出一组**确定性**指标。
+
+    ⚠️ **这是"算数"，不是"判断"**——所以它由代码做，不由模型做。
+    本项目的一条边界是「LLM 只做决策、不做算数」（设计文档 §0.5
+    实测过它会写出 100 倍的价格）。把算好的数喂给它，是**尊重**这条边界。
+
+    ⚠️ **这些指标本身不是信号**：每根 K 线都算得出来，但它们能否预测
+    下一根，取决于市场是否有效。本函数**不声称**它们有预测力——
+    它只做算术。v3 实验检验的是"模型会不会用"，不是"指标灵不灵"。
+
+    返回空 dict 表示样本不足（< 2 根）——调用方要能处理这种情况，
+    **不能**用 0 顶替（0 是一个会参与推理的合法值）。
+    """
+    cs = [float(x) for x in recent_closes if x is not None]
+    n = len(cs)
+    if n < 2:
+        return {}
+    first, last = cs[0], cs[-1]
+    if first <= 0:
+        return {}
+    rets = [(b - a) / a for a, b in zip(cs, cs[1:]) if a > 0]
+    mean_ret = sum(rets) / len(rets) if rets else 0.0
+    var = (sum((r - mean_ret) ** 2 for r in rets) / (len(rets) - 1)
+           if len(rets) > 1 else 0.0)
+    lo, hi = min(cs), max(cs)
+    k = min(3, n)
+    fast = sum(cs[-k:]) / k
+    slow = sum(cs) / n
+    return {
+        "ret_lookback": (last - first) / first,
+        "vol_pct": math.sqrt(max(var, 0.0)),
+        "pos_pctile": ((last - lo) / (hi - lo)) if hi > lo else 0.5,
+        "ma_fast": fast,
+        "ma_slow": slow,
+        "ma_gap": (fast - slow) / slow if slow > 0 else 0.0,
+        "last_ret": (cs[-1] - cs[-2]) / cs[-2] if cs[-2] > 0 else 0.0,
+        "up_frac": (sum(1 for r in rets if r > 0) / len(rets)) if rets else 0.0,
+    }
+
+
+def _features_text(feats: dict[str, float]) -> str:
+    """把特征排成人读的几行。
+
+    ⚠️ **算不出来时要说"算不出来"**，不能用 0 顶替——
+    0 会被模型当成一个真实的观测值参与推理。
+    """
+    if not feats:
+        return "（样本不足，本次算不出指标——请只用下面的原始收盘价判断）"
+    fmt = {
+        "ret_lookback": lambda v: f"{v:+.3%}",
+        "vol_pct": lambda v: f"{v:.3%}",
+        "pos_pctile": lambda v: f"{v:.2f}",
+        "ma_fast": lambda v: f"{v:,.2f}",
+        "ma_slow": lambda v: f"{v:,.2f}",
+        "ma_gap": lambda v: f"{v:+.3%}",
+        "last_ret": lambda v: f"{v:+.3%}",
+        "up_frac": lambda v: f"{v:.0%}",
+    }
+    rows = []
+    for key, zh in _FEATURE_ROWS:
+        if key in feats:
+            rows.append(f"- {zh}：{fmt[key](feats[key])}")
+    return "\n".join(rows) if rows else "（无可算指标）"
+
+
 def build_messages(
     visible: dict[str, Any],
     *,
@@ -295,6 +521,10 @@ def build_messages(
         funding_rate_txt=(f"{_fmt(visible.get('funding_rate'), 8)}"
                           if visible.get("funding_rate") is not None else "（无）"),
         unavailable_txt=_unavailable_text(visible),
+        # ⚠️ 特征只从 ``visible`` 里的 ``recent_closes`` 算——
+        # **不额外取数据**。否则留痕里的 visible_state 就不再是
+        # "模型看到的全部"，回放会变成重演一个信息更少的场景。
+        features_txt=_features_text(market_features(rc)),
         n_closes=len(rc),
         recent_closes_txt=("、".join(_fmt(x, 2) for x in rc) if rc else "（无）"),
         position_txt=_position_text(position),
@@ -328,4 +558,5 @@ __all__ = [
     "OUTPUT_KEYS",
     "build_messages",
     "template_fingerprint",
+    "market_features",
 ]

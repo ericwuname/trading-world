@@ -1471,6 +1471,85 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    # ==================================================================
+    # A5：GUI 集成（GUI 留痕浏览 + JSON 互操作）（2026-09-21 第十一轮）
+    # 这批的目标是**自测全绿但产物/页面是坏的**那类问题。
+    # ==================================================================
+    (
+        'M93',
+        '写 JSON 时不把 NaN/Inf 换成 null（去掉 json_safe）'
+        '——`json.dumps(float("nan"))` 在 Python 里默认输出**裸的 `NaN`**，'
+        '而 `NaN` **不是合法 JSON**（RFC 8259 没有它）。'
+        'Python 读得回来（解析器是超集）⇒ **自测全绿**；'
+        '但 JS 的 `JSON.parse` 直接抛 `Unexpected token N`。'
+        '触发源很讽刺：不交易时 `sharpe` 按设计返回 nan（"算不出来"），'
+        '于是**最基准的那条配置（noop）**产出了非法 JSON',
+        [
+            (
+                'tw/eval_agent.py',
+                '    if isinstance(o, float):\n'
+                '        return o if math.isfinite(o) else None\n',
+                '    if isinstance(o, float):\n'
+                '        return o\n',
+            ),
+        ],
+    ),
+    (
+        'M94',
+        '首屏预载嵌进 HTML 时不转义 `</`'
+        '——JSON 里若出现 `</script>`（比如某条决策的理由里恰好写了它），'
+        '浏览器会**提前结束脚本块**。那不是转义的小毛病，是**注入**：'
+        '后面的内容会被当成 HTML 解析',
+        [
+            (
+                'gui/server.py',
+                '    blob = blob.replace("</", "<\\\\/")\n',
+                '    blob = blob\n',
+            ),
+        ],
+    ),
+    (
+        'M95',
+        'GUI 的取数接口接受用户给的路径（而不是只按扫描出的 id 取）'
+        '——那等于给一个**允许跑代码的本机服务**再开一个**任意文件读**的口子。'
+        '而它看起来只是个"按路径取数据"的便利功能（"id 找不到就当成路径"）',
+        [
+            (
+                'gui/agent_api.py',
+                '    for e in discover(root):\n'
+                '        if e.id == run_id:\n'
+                '            return e\n'
+                '    raise KeyError(f"没有这个运行 {run_id!r}（先调 /api/agent/runs 看清单）")\n',
+                '    for e in discover(root):\n'
+                '        if e.id == run_id:\n'
+                '            return e\n'
+                '    return RunEntry(id=run_id, label=run_id, source_dir="?",\n'
+                '                    dec_path=Path(root) / run_id, eval_path=None)\n',
+            ),
+        ],
+    ),
+    (
+        'M96',
+        '「决策依据自报」在两处各写一份实现'
+        '——`gui.agent_api` 与 `tw.eval_agent` 各写一遍，'
+        '于是两边的字段不一样（一边多 `n_declared`），'
+        '而 GUI 用一个、报告用另一个。'
+        '本项目的老教训：**同一个量有多份实现，就一定会分叉**',
+        [
+            (
+                'gui/agent_api.py',
+                '    return _eval_agent.basis_distribution(recs)\n',
+                '    counts: dict[str, int] = {}\n'
+                '    for r in recs:\n'
+                '        k = str(r.parsed.get("basis") or "")\n'
+                '        if k not in BASIS_LABELS:\n'
+                '            k = ""\n'
+                '        counts[k] = counts.get(k, 0) + 1\n'
+                '    return {"n": sum(counts.values()), "counts": counts,\n'
+                '            "labels": BASIS_LABELS}\n',
+            ),
+        ],
+    ),
 
 ]
 

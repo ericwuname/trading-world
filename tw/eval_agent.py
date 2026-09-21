@@ -39,6 +39,35 @@ from .analyzer_consistency import pairwise_verdict
 #: 夏普的年化因子（1H K 线 → 一年约 24×365 根）。
 BARS_PER_YEAR_1H = 24 * 365
 
+
+def json_safe(o: Any) -> Any:
+    """把 ``NaN`` / ``±Inf`` 递归换成 ``None``。
+
+    ⚠️⚠️ 这不是"顺手清理"，是一个**真踩过的互操作 bug**：
+
+    ``json.dumps(float("nan"))`` 在 Python 里默认输出裸的 ``NaN``——
+    而 **``NaN`` 不是合法 JSON**（RFC 8259 没有它）。后果：
+      · Python 自己读得回来（它的解析器**超集**接受 NaN），所以**自测全绿**；
+      · 但 JS 的 ``JSON.parse`` 直接报 ``Unexpected token 'N'``；
+      · Go / Rust / Java 的标准 JSON 库同样拒绝。
+    ⇒ **产物对任何非 Python 消费者都是坏的，而我们自己发现不了。**
+
+    本项目真的撞上了：把评估 JSON 嵌进页面时，浏览器的
+    ``JSON.parse`` 抛错、整页退化成"读取失败"，而 Python 侧一切正常。
+    来源是 ``sharpe``：不交易（如 ``noop``）时它按设计返回 ``nan``
+    （"算不出来"），于是**最基准的那条配置**产出了非法 JSON。
+
+    修法：**写文件/嵌入页面前一律过这个函数**，并配
+    ``json.dumps(..., allow_nan=False)`` —— 让它**再也不能**悄悄写出 NaN。
+    """
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [json_safe(v) for v in o]
+    return o
+
 #: 置信度校准的默认前瞻窗口（根）。
 DEFAULT_CALIB_HORIZON = 4
 
@@ -190,7 +219,54 @@ def decision_layer(res: RunResult) -> dict[str, Any]:
         "external_ref_frac": _pct(
             sum(1 for rs in reasons if any(w in rs for w in _EXTERNAL_TERMS)), n),
     }
+    # ⭐ 决策依据自报分布（v4 起）。老模板自然全是"未自报"。
+    out["basis"] = basis_distribution(recs)
     return out
+
+
+#: 决策依据自报的显示名。**唯一一份**——
+#: ``gui.agent_api`` 从这里转发，不另写。
+#: （本项目的老教训：同一个量有多份实现，就一定会分叉。）
+BASIS_LABELS: dict[str, str] = {
+
+    "rule": "照指标执行",
+    "judgment": "凭自己判断",
+    "both": "两者结合",
+    "": "未自报",
+}
+
+
+def basis_distribution(recs: list) -> dict[str, Any]:
+    """统计模型**自报**的决策依据分布。
+
+    ⚠️ 这是**模型自己说的**，不是我们测出来的。它可能为了"显得一致"
+    而把两种理由都写上（于是 ``both`` 虚高）。⇒ 它是**声明**，
+    不是**证据**。要交叉验证，得看两类在**实际行为**上的差异
+    （换手率、与 momentum 信号的一致率、置信度分布）。
+    报告里必须这么写，否则这个数字会被当成"模型真的这么做了"。
+    """
+    counts: dict[str, int] = {}
+    for r in recs:
+        k = str(r.parsed.get("basis") or "")
+        if k not in BASIS_LABELS:
+            k = ""
+        counts[k] = counts.get(k, 0) + 1
+    n = sum(counts.values())
+    if not n:
+        return {"n": 0, "counts": {}, "frac": {}, "labels": BASIS_LABELS}
+    # 只报"有自报的"那一部分的比例（v1~v3 全未自报时不要给一堆 100%）
+    n_declared = n - counts.get("", 0)
+    return {
+        "n": n,
+        "n_declared": n_declared,
+        "counts": counts,
+        "frac": {k: v / n for k, v in counts.items()},
+        "frac_of_declared": (
+            {k: v / n_declared for k, v in counts.items() if k}
+            if n_declared else {}),
+        "labels": BASIS_LABELS,
+        "caveat": "这是**模型自报**的依据，不是测出来的；只作声明看。",
+    }
 
 
 def confidence_calibration(
@@ -639,8 +715,11 @@ def format_report_lines(evals: dict[str, dict[str, Any]],
 
 __all__ = [
     "BARS_PER_YEAR_1H",
+    "json_safe",
+    "BASIS_LABELS",
     "DEFAULT_CALIB_HORIZON",
     "decision_layer",
+    "basis_distribution",
     "execution_layer",
     "result_layer",
     "confidence_calibration",

@@ -573,13 +573,19 @@ class TestPrompts(unittest.TestCase):
         self.assertEqual([x["role"] for x in m], ["system", "user"])
 
     def test_可见字段真的渲染进user正文(self):
-        """⭐ 不给模型看，却指望它用——这是"假能力"的来源。"""
+        """⭐ 不给模型看，却指望它用——这是"假能力"的来源。
+
+        ⚠️ **必须显式钉住模板版本**：这条测的是"v1 会把每个字段渲染出来"。
+        v2/v3/v4 有意**不**逐个渲染盘口（它们在版面上做了取舍），
+        所以用默认版本跑这条测试会在默认版本变更时**静默失效**——
+        它曾经就是这样坏掉的（默认从 v1 改成 v2 后这条先红）。
+        """
         m = build_messages(
             {"mid": 102.44, "best_bid": 102.40, "best_ask": 102.48,
              "spread_bp": 8.1, "mark": 102.5, "funding_rate": 0.0001,
              "cash": 1000.0, "equity": 999.0, "margin_ratio": 0.42,
              "recent_closes": [101.0, 102.0]},
-            inst_id="BTC-USDT-SWAP", tick=7)
+            inst_id="BTC-USDT-SWAP", tick=7, template="v1")
         body = m[1]["content"]
         for token in ("102.44", "102.4", "102.48", "8.1", "102.5",
                       "0.0001", "1,000", "999", "0.42", "tick 7"):
@@ -1119,10 +1125,10 @@ class TestTradingAgent(unittest.TestCase):
         from unittest.mock import patch
 
         a = _agent([BUY_OK]).decide(visible=_vis(), tick=7, run_id="R", equity=1e5)
-        with patch.dict(TEMPLATES, {"v2": dict(TEMPLATES[DEFAULT_TEMPLATE]),
-                                    }, clear=False):
+        with patch.dict(TEMPLATES, {"__test__": dict(TEMPLATES["v1"])},
+                        clear=False):
             ag = TradingAgent(client=ScriptedClient.from_json_texts([BUY_OK]),
-                              config=AgentConfig(template="v2"))
+                              config=AgentConfig(template="__test__"))
             b = ag.decide(visible=_vis(), tick=7, run_id="R", equity=1e5)
         self.assertNotEqual(a.prompt_template, b.prompt_template)
         self.assertNotEqual(a.decision_id, b.decision_id)

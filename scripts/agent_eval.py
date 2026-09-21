@@ -45,6 +45,7 @@ from tw.eval_agent import (  # noqa: E402
     cost_sensitivity_rerun,
     evaluate_run,
     format_report_lines,
+    json_safe,
 )
 from tw.llm import HTTPClient, LLMConfig, Recorder, ReplayClient  # noqa: E402
 from tw.marketdb import SOURCE_OKX, MarketStore  # noqa: E402
@@ -258,10 +259,15 @@ def main() -> int:
 
     if args.out_json:
         Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
+        # ⚠️ **必须 sanitize + allow_nan=False**：Python 的 json 默认会写出
+        # 裸的 `NaN`，而它不是合法 JSON（JS/Go/Rust 都读不了），
+        # 而 Python 自己读得回来 ⇒ **自测全绿、产物却是坏的**。
+        # 详见 ``tw.eval_agent.json_safe`` 的文档。
         Path(args.out_json).write_text(json.dumps(
-            {"config": vars(args), "evals": evals, "comparison": comparison,
-             "target": target},
-            ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            json_safe({"config": vars(args), "evals": evals,
+                       "comparison": comparison, "target": target}),
+            ensure_ascii=False, indent=2, default=str,
+            allow_nan=False), encoding="utf-8")
         print(f"\n  JSON → {args.out_json}")
     return 0
 

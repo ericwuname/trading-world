@@ -56,6 +56,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import time
@@ -438,11 +439,16 @@ class DecisionLog:
 
         ⚠️ 空行**跳过**（``flush`` 时序可能留下半行），但**坏行报错**——
         静默跳过坏行会让"留痕有 3% 的行损坏"这个事实完全消失。
+
+        ⚠️ 支持 ``.jsonl.gz``：归档进仓库的留痕是压缩存的
+        （压缩比约 10%）。**归档必须仍可读**，否则"留痕"就只是存档，
+        不是证据——而本项目的前提是"能回放、能复核"。
         """
         out: list[DecisionRecord] = []
         if not self.path.exists():
             return out
-        with open(self.path, "r", encoding="utf-8") as fh:
+        opener = gzip.open if self.path.suffix == ".gz" else open
+        with opener(self.path, "rt", encoding="utf-8") as fh:
             for i, line in enumerate(fh, 1):
                 s = line.strip()
                 if not s:

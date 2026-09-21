@@ -108,6 +108,35 @@ main{flex:1;display:flex;flex-direction:column;min-width:0}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media (max-width:1180px){.grid2{grid-template-columns:1fr}}
 .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px}
+/* ---------- A5：Agent 决策留痕 ---------- */
+.tl{max-height:340px;overflow-y:auto;border:1px solid var(--grid);border-radius:8px}
+.tl table{width:100%;border-collapse:collapse;font-size:12.5px}
+.tl thead th{position:sticky;top:0;background:var(--panel2);z-index:1;text-align:left;
+  padding:7px 9px;border-bottom:1px solid var(--line);color:var(--fg2);font-weight:600;white-space:nowrap}
+.tl tbody td{padding:6px 9px;border-bottom:1px solid var(--grid);vertical-align:top}
+.tl tbody tr{cursor:pointer}
+.tl tbody tr:hover{background:var(--panel3)}
+.tl tbody tr.sel{background:rgba(90,169,230,.14)}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;
+  border:1px solid transparent;white-space:nowrap}
+.tag.buy{background:rgba(224,108,117,.16);color:var(--accent);border-color:rgba(224,108,117,.35)}
+.tag.sell{background:rgba(143,191,106,.16);color:var(--good);border-color:rgba(143,191,106,.35)}
+.tag.hold{background:rgba(125,135,152,.16);color:var(--muted);border-color:rgba(125,135,152,.35)}
+.tag.ok{background:rgba(143,191,106,.16);color:var(--good)}
+.tag.no{background:rgba(224,164,88,.16);color:var(--warn)}
+.tag.bad{background:rgba(224,108,117,.16);color:var(--accent)}
+.chain{margin-top:12px}
+.chain details{border:1px solid var(--grid);border-radius:8px;margin-bottom:8px;background:var(--panel2)}
+.chain summary{padding:9px 12px;cursor:pointer;font-weight:600;font-size:12.5px;color:var(--fg2)}
+.chain summary:hover{color:var(--fg)}
+.chain .bd{padding:0 12px 12px;font-size:12.5px}
+.chain .bd pre{margin:0;background:#14161b;border:1px solid var(--grid);border-radius:7px;
+  padding:9px 11px;overflow-x:auto;max-height:290px;font-size:11.5px;line-height:1.6;
+  font-family:ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.chain .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:6px 0}
+.chain .kv b{color:var(--muted);font-weight:500}
+.ratio{display:flex;height:16px;border-radius:4px;overflow:hidden;margin:6px 0;border:1px solid var(--line)}
+.ratio i{display:flex;align-items:center;justify-content:center;font-size:10.5px;color:#0d1117;font-style:normal}
 .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .kpi .k{font-size:11px;color:var(--muted);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kpi .v{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
@@ -250,6 +279,7 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
       <button data-tab="strategy">策略表现</button>
       <button data-tab="compare">对照</button>
       <button data-tab="real">真实比对</button>
+      <button data-tab="agent">Agent 决策</button>
     </nav>
     <div id="pane">
       <div class="tabpane on" id="tab-overview"></div>
@@ -258,6 +288,7 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
       <div class="tabpane" id="tab-strategy"></div>
       <div class="tabpane" id="tab-compare"></div>
       <div class="tabpane" id="tab-real"></div>
+      <div class="tabpane" id="tab-agent"></div>
     </div>
   </main>
 </div>
@@ -591,6 +622,11 @@ const State = {
   lab: null,
   selected: new Set(),// 对照页勾选的作业 id
   cfg: {},
+  //: A5：Agent 决策留痕页的状态。
+  //: ``loaded`` 用来做**懒加载**——不点那个 tab 就不去读磁盘上的留痕
+  //: （可能有几百条、几 MB），点的时候再读。
+  agent: { loaded: false, _p: null, runs: [], sel: "", summary: null,
+           page: null, detail: null, err: "" },
 };
 
 /* =====================================================================
@@ -815,7 +851,7 @@ function switchTab(name) {
 }
 function renderAll() {
   renderOverview(); renderCharts(); renderMetrics();
-  renderStrategyTab(); renderCompare(); renderReal();
+  renderStrategyTab(); renderCompare(); renderReal(); renderAgent();
 }
 function emptyBox(title, tips) {
   return el("div", { class: "empty" },
@@ -1251,6 +1287,296 @@ function renderReal() {
 }
 
 /* =====================================================================
+   5.5 Agent 决策留痕（A5）
+   ---------------------------------------------------------------------
+   三件事：① 选一个运行 ② 看时间线 ③ 点开一条看**证据链六项**。
+   数据全部来自 /api/agent/*（后端只读、不接受路径）。
+   ===================================================================== */
+const BASIS_LABEL = { rule: "照指标执行", judgment: "凭自己判断", both: "两者结合", "": "未自报" };
+const BASIS_COLOR = { rule: "var(--mid)", judgment: "var(--purple)", both: "var(--good)", "": "var(--muted)" };
+
+function ensureAgentLoaded() {
+  // ⚠️ 用 **promise** 而不是布尔标记来做"只取一次"。
+  // 布尔标记有个隐蔽的坑：谁先碰它就谁开始取，后来者只能看到"已经开始了"
+  // 而**没法等**——深链时首绘就会发生在数据到达之前（拿到占位图）。
+  // 本项目为此真的踩过一次：截图/DOM dump 全是「载入中…」，
+  // 而检查"有没有内容"居然通过了。
+  if (!State.agent._p) State.agent._p = loadAgentRuns();
+  return State.agent._p;
+}
+
+async function loadAgentRuns() {
+  try {
+    const d = await api("/api/agent/runs");
+    State.agent.runs = d.runs || [];
+    if (!State.agent.sel && State.agent.runs.length) {
+      // 优先选一个带评估结果的（信息最多）
+      const best = State.agent.runs.find((r) => r.has_eval) || State.agent.runs[0];
+      State.agent.sel = best.id;
+    }
+    if (State.agent.sel) await loadAgentRun(State.agent.sel);
+    renderAgent();
+  } catch (e) {
+    State.agent.err = e.message;
+    renderAgent();
+  }
+}
+
+async function loadAgentRun(id) {
+  State.agent.sel = id;
+  State.agent.detail = null;
+  State.agent.summary = await api("/api/agent/run/" + encodeURIComponent(id) + "/summary");
+  State.agent.page = await api(
+    "/api/agent/run/" + encodeURIComponent(id) + "/decisions?offset=0&limit=200");
+  drawAgentCurve();
+}
+
+function drawAgentCurve() {
+  const c = State.agent.summary && State.agent.summary.curve;
+  if (!c || !c.n) { drawChart("c_agt_eq", { series: [], height: 190 }); return; }
+  const y0 = c.initial_equity;
+  const rel = c.equity.map((v) => (v / y0 - 1) * 100);
+  drawChart("c_agt_eq", {
+    series: [
+      { name: "权益（%）", color: css("--mid"), xs: c.ticks, ys: rel, width: 1.6, fill: true },
+      { name: "基准 0", color: css("--grid"), xs: [c.ticks[0], c.ticks[c.ticks.length - 1]],
+        ys: [0, 0], width: 1, dash: [4, 4] },
+    ],
+    yFmt: (v) => fmtSigned(v, 2) + "%", height: 190, padL: 70,
+  });
+}
+
+function renderAgent() {
+  const box = $("#tab-agent");
+  box.innerHTML = "";
+  const A = State.agent;
+  if (A.err) { box.append(emptyBox("读取失败", [esc(A.err)])); return; }
+  if (!A.loaded) {
+    // 懒加载：第一次渲染这个 tab 才去读磁盘（见 State.agent 的注释）
+    if (!A._p) {
+      box.append(emptyBox("正在读取 Agent 留痕…",
+        ["正在扫描固定目录（<code>out/a4</code>、<code>out/a5</code>、" +
+         "<code>docs/llm-run-*</code>）。"]));
+    }
+    ensureAgentLoaded();
+    return;
+  }
+  if (!A.runs.length) {
+    box.append(emptyBox("还没有可浏览的 Agent 运行",
+      ["先跑一次：<code>python scripts/agent_eval.py --inst BTC-USDT-SWAP --n 200 --rules-only</code>",
+       "它会产出 <code>out/a4/</code> 或 <code>out/a5/</code> 下的决策留痕。",
+       "已归档的运行（<code>docs/llm-run-*</code>）也会自动出现在这里。"]));
+    return;
+  }
+
+  /* ---- 选择器 ---- */
+  const sel = el("select", { id: "agtSel" });
+  for (const r of A.runs) {
+    const o = el("option", { value: r.id }, r.label + (r.has_eval ? "  ·含评估" : ""));
+    if (r.id === A.sel) o.selected = true;
+    sel.append(o);
+  }
+  sel.onchange = () => loadAgentRun(sel.value).then(renderAgent).catch((e) => {
+    A.err = e.message; renderAgent();
+  });
+  box.append(card("Agent 决策留痕",
+    "数据来自 <code>/api/agent/*</code>（<b>只读</b>，且路径不接受用户输入——" +
+    "所有产物在启动时扫描成目录，前端只能按目录里的 id 取）。",
+    el("div", { class: "field" }, el("label", {}, "选择一次运行"), sel),
+    el("div", { class: "hint", html: "共 <b>" + A.runs.length + "</b> 个运行。" +
+      "带「含评估」的有配套的分层评估 JSON。" })));
+
+  const S = A.summary;
+  if (!S) { box.append(emptyBox("载入中…", ["正在读留痕文件。"])); return; }
+
+  /* ---- 概览 ---- */
+  const c = S.curve || { n: 0 };
+  const ret = c.initial_equity ? (c.final_equity / c.initial_equity - 1) : null;
+  const nHold = (S.actions && S.actions.hold) || 0;
+  const k = el("div", { class: "kpis" },
+    kpi("决策数", fmt(S.n, 0)),
+    kpi("成交", fmt(S.executed, 0), "", "good"),
+    kpi("弃权率", fmt((nHold / Math.max(S.n, 1)) * 100, 1), "%"),
+    kpi("解析失败", fmt(S.parse_fail, 0), "", S.parse_fail ? "warn" : "good"),
+    kpi("延迟中位", fmt(S.latency_ms_p50, 0), "ms"),
+    kpi("净收益", ret === null ? "—" : fmtSigned(ret * 100, 3), "%",
+      ret !== null && ret >= 0 ? "good" : "bad"),
+    kpi("模式", (S.modes || []).join(" / ") || "—"),
+    kpi("模板", (S.templates || []).join(" / ") || "—"),
+    kpi("模型", (S.models || []).join(" / ") || "—"),
+    kpi("tick 范围", S.tick_range ? (S.tick_range[0] + "–" + S.tick_range[1]) : "—"));
+  box.append(card(S.label, "文件 <code>" + esc(S.file) + "</code>（目录 " + esc(S.dir) + "）", k));
+
+  /* ---- 权益曲线 ---- */
+  box.append(chartBox("c_agt_eq", "权益曲线（相对初始权益 %）",
+    "⭐ 这条曲线<b>不是另存的</b>——它是从每条决策留痕的①可见状态里" +
+    "<code>equity</code> 取出来的。留痕本来就是为回放而存的，画图只是顺带。" +
+    (c.per_bar_decision ? "" : " ⚠️ 本次不是「每根决策一次」，曲线只覆盖决策点。"), 190));
+  drawAgentCurve();
+
+  /* ---- 决策依据自报（v4）---- */
+  const bs = S.basis;
+  if (bs && bs.n_declared) {
+    const bar = el("div", { class: "ratio" });
+    for (const key of ["rule", "judgment", "both"]) {
+      const f = (bs.frac_of_declared || {})[key] || 0;
+      if (f <= 0) continue;
+      bar.append(el("i", { style: "width:" + (f * 100).toFixed(1) + "%;background:" +
+        BASIS_COLOR[key], title: BASIS_LABEL[key] + " " + (f * 100).toFixed(1) + "%" },
+        f >= 0.12 ? (f * 100).toFixed(0) + "%" : ""));
+    }
+    box.append(card("⭐ 它选了哪条路（模型自报）",
+      "这是 v4 模板要求的 <code>basis</code> 字段——<b>把选择权交给模型</b>：" +
+      "两条路都摆在它面前，由它自己决定，并要求它讲出来。" +
+      "<br>⚠️ 这是<b>模型自报的声明，不是测出来的证据</b>：它可能为了显得一致而都写 both。" +
+      "要交叉验证，得看两类在<b>实际行为</b>上的差异（换手率、与 momentum 信号的一致率）。",
+      bar,
+      tbl(["依据", "条数", "占有自报的比例"],
+        ["rule", "judgment", "both"].map((key) => el("tr", {},
+          el("td", {}, el("span", { class: "tag",
+            style: "border-color:" + BASIS_COLOR[key] + ";color:" + BASIS_COLOR[key] },
+            BASIS_LABEL[key])),
+          el("td", {}, fmt((bs.counts || {})[key] || 0, 0)),
+          el("td", {}, fmt(((bs.frac_of_declared || {})[key] || 0) * 100, 1) + "%"))))));
+  }
+
+  /* ---- 分层评估 ---- */
+  if (S.eval && S.eval.evals) box.append(agentEvalCard(S.eval));
+
+  /* ---- 时间线 ---- */
+  box.append(agentTimelineCard());
+
+  /* ---- 详情 ---- */
+  if (A.detail) box.append(agentChainCard(A.detail));
+}
+
+function agentEvalCard(ev) {
+  const names = Object.keys(ev.evals);
+  const rows = names.map((nm) => {
+    const e = ev.evals[nm], r = e.result || {}, d = e.decision || {}, x = e.execution || {};
+    return el("tr", {},
+      el("td", {}, el("code", {}, nm)),
+      el("td", {}, fmt(r.gross_return * 100, 2) + "%"),
+      el("td", {}, el("b", {}, fmtSigned((r.net_return || 0) * 100, 2) + "%")),
+      el("td", {}, fmt(r.max_drawdown * 100, 2) + "%"),
+      el("td", {}, (r.sharpe == null || isNaN(r.sharpe)) ? "—" : fmt(r.sharpe, 2)),
+      el("td", {}, fmt(r.n_trades, 0)),
+      el("td", {}, fmt(d.abstain_frac * 100, 1) + "%"),
+      el("td", {}, fmt(d.rejected_frac * 100, 1) + "%"),
+      el("td", {}, fmt(x.fill_rate_of_orders * 100, 1) + "%"));
+  });
+  const body = [tbl(["配置", "毛收益", "净收益", "最大回撤", "夏普", "交易数",
+    "弃权率", "被拒率", "订单成交率"], rows)];
+  if (ev.comparison) {
+    const cmp = ev.comparison;
+    body.push(el("div", { class: "desc", style: "margin-top:12px", html:
+      "对照：<code>" + esc(cmp.metric) + "</code>，点估计 " +
+      fmtSigned(cmp.target_point * 1e4, 4) + " bp/根，95% 区间 [" +
+      fmtSigned(cmp.target_ci[0] * 1e4, 4) + ", " + fmtSigned(cmp.target_ci[1] * 1e4, 4) + "]" }));
+    body.push(tbl(["对照基线", "判据", "判定", "重叠"], (cmp.verdicts || []).map((v) => el("tr", {},
+      el("td", {}, el("code", {}, v.name_b)),
+      el("td", {}, v.test === "ci_excludes_baseline" ? "CI 排除基准值" : "区间重叠"),
+      el("td", {}, el("b", {}, v.verdict)),
+      el("td", {}, (v.overlap_fraction == null || isNaN(v.overlap_fraction))
+        ? "—" : fmt(v.overlap_fraction * 100, 1) + "%")))));
+  }
+  return card("分层评估（决策 / 执行 / 结果）",
+    "与基线的比较走<b>区间重叠检验</b>；零方差基线（noop 收益恒 0）改问" +
+    "「CI 是否排除基准值」。判定为<b>「依然无法判定」不等于「没有差别」</b>——" +
+    "它只说明这个样本量分不出来。", ...body);
+}
+
+function agentTimelineCard() {
+  const A = State.agent, p = A.page;
+  if (!p) return card("决策时间线", "", el("div", { class: "desc" }, "载入中…"));
+  const head = el("tr", {}, ...["tick", "动作", "量", "置信", "风控规则", "状态", "理由"]
+    .map((h) => el("th", {}, h)));
+  const rows = p.rows.map((r, i) => {
+    const tr = el("tr", {},
+      el("td", {}, fmt(r.tick, 0)),
+      el("td", {}, el("span", { class: "tag " + (r.action || "hold") }, r.action || "?")),
+      el("td", {}, r.sz == null ? "—" : fmt(r.sz, 4)),
+      el("td", {}, r.conf == null ? "—" : fmt(r.conf, 2)),
+      el("td", {}, el("code", {}, r.rule || "—")),
+      el("td", {}, r.parse_ok
+        ? (r.executed ? el("span", { class: "tag ok" }, "成交")
+          : el("span", { class: "tag no" }, "未成交"))
+        : el("span", { class: "tag bad" }, "解析失败")),
+      el("td", { title: r.reason }, (r.reason || "").slice(0, 56)));
+    tr.onclick = () => openAgentDetail(p.offset + i);
+    return tr;
+  });
+  const wrap = el("div", { class: "tl" },
+    el("table", {}, el("thead", {}, head), el("tbody", {}, ...rows)));
+  return card("决策时间线（" + fmt(p.total, 0) + " 条，显示第 " +
+    fmt(p.offset + 1, 0) + "–" + fmt(Math.min(p.offset + p.rows.length, p.total), 0) + " 条）",
+    "点任意一行看<b>完整证据链六项</b>（当时能看到什么 / 相信什么 / 建议什么 / " +
+    "是否真的成交 / 什么规则拦了它 / 结果）。", wrap);
+}
+
+async function openAgentDetail(idx) {
+  try {
+    State.agent.detail = await api("/api/agent/run/" +
+      encodeURIComponent(State.agent.sel) + "/decision/" + idx);
+    renderAgent();
+    const d = document.querySelector("#tab-agent .chain");
+    if (d) d.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) { alert("读取失败：" + e.message); }
+}
+
+function jsonBlock(o) {
+  return el("pre", {}, JSON.stringify(o, null, 2));
+}
+
+function agentChainCard(det) {
+  const ch = det.chain;
+  const mk = (title, node, open) => {
+    const dd = el("details", {});
+    if (open) dd.setAttribute("open", "");
+    dd.append(el("summary", {}, title), el("div", { class: "bd" }, node));
+    return dd;
+  };
+  const vs = ch["1_visible"];
+  const visibleRows = Object.keys(vs).map((k) => el("div", {}, el("b", {}, k + "："), String(vs[k])));
+
+  const order = ch["6_order"] || {};
+  return card("证据链 · tick " + fmt(det.identity.tick, 0) +
+    "（" + (det.idx + 1) + "/" + fmt(det.total, 0) + "）",
+    "<code>" + esc(det.raw.summary) + "</code><br>decision_id <code>" +
+    esc(det.identity.decision_id) + "</code>",
+    el("div", { class: "chain" },
+      mk("① 当时能看到什么（visible_state + 来源）",
+        el("div", {}, el("div", { class: "kv" }, ...visibleRows),
+          el("div", { class: "kv" },
+            el("b", {}, "context_hash："), el("span", {}, ch["2_belief"].context_hash || "—"),
+            el("b", {}, "data_snapshot："), el("span", {}, ch["2_belief"].data_snapshot || "—")))),
+      mk("② 它相信什么（模板 / 模型 / 模式 / 检索）",
+        el("div", {}, el("div", { class: "kv" },
+          el("b", {}, "prompt_template："), el("span", {}, String(ch["2_belief"].prompt_template)),
+          el("b", {}, "model："), el("span", {}, ch["2_belief"].model || "（规则基线）"),
+          el("b", {}, "mode："), el("span", {}, String(ch["2_belief"].mode)),
+          el("b", {}, "model_params："), el("span", {}, JSON.stringify(ch["2_belief"].model_params)),
+          el("b", {}, "retrieved 条数："), el("span", {}, String((ch["2_belief"].retrieved || []).length)),
+        ), el("div", { class: "desc", html: "⚠️ <code>retrieved</code> 非空表示"
+          + "「可能有外部信息进来」——回放模式下必须为空。" }))),
+      mk("③ 建议的动作（解析结果 + 原始输出）",
+        el("div", {}, jsonBlock(ch["3_suggestion"])), true),
+      mk("④ 是否真的变成交易",
+        el("div", {}, el("div", { class: "kv" },
+          el("b", {}, "executed："), el("span", {}, String(ch["4_whether_traded"].executed)),
+          el("b", {}, "reject_code："), el("span", {}, ch["4_whether_traded"].reject_code || "—"),
+          el("b", {}, "reject_msg："), el("span", {}, ch["4_whether_traded"].reject_msg || "—")),
+          el("div", { class: "desc", html: "风控<b>之前</b>请求的量（必须保留——它是" +
+            "「风控贡献了多少」的分母）：" }),
+          jsonBlock(ch["4_whether_traded"].requested))),
+      mk("⑤ 什么规则接受 / 拒绝 / 改了量", jsonBlock(ch["5_risk"])),
+      mk("⑥ 最终落成的订单（OKX 语义）",
+        Object.keys(order).length ? jsonBlock(order)
+          : el("div", { class: "desc" }, "本次没有落成订单（弃权或被拒）。")),
+      mk("原始模型输出（不截断）", el("pre", {}, det.raw.llm_raw || "（无）"))));
+}
+
+/* =====================================================================
    6. URL 参数：让一次实验变成可分享、可复现的链接
    ---------------------------------------------------------------------
    形如 ?token=XXX&scenario=stressed&strategy=mm_skewed&ticks=8000&autorun=1
@@ -1343,7 +1669,10 @@ $("#loadReal").onclick = async () => {
 };
 window.addEventListener("resize", () => {
   clearTimeout(window.__rz);
-  window.__rz = setTimeout(() => { renderCharts(); renderMetrics(); renderReal(); }, 180);
+  window.__rz = setTimeout(() => {
+    renderCharts(); renderMetrics(); renderReal();
+    if (State.agent.loaded) renderAgent();   // A5：曲线要跟着重画
+  }, 180);
 });
 
 (async function boot() {
@@ -1364,6 +1693,30 @@ window.addEventListener("resize", () => {
   }
   fillSidebar(State.meta);
   applyUrlParams();
+  // ⚠️ 深链到 Agent 页时**先等数据再首绘**。
+  // 否则第一次 paint 是「载入中…」占位，要等异步 fetch 回来才替换——
+  // 对人是"闪一下"（可以接受），对**无头截图是致命的**：
+  // 截图在 fetch 之前拍，拿到的是占位图，而检查只看字节数会**通过**。
+  // 本项目在 GUI 那轮踩过同形的坑：**验证方式骗人比 bug 更危险。**
+  // ⭐ A5：首屏数据由服务端**嵌在 HTML 里**（见 server._inject_agent_preload），
+  // 所以这里同步消费即可 —— 首绘是确定的，不依赖异步 fetch 的完成时机。
+  // 没有预载块（比如直接切 tab）时退回异步路径。
+  if (State.wantTab === "agent") {
+    const tag = document.getElementById("agentPreload");
+    if (tag) {
+      try {
+        const d = JSON.parse(tag.textContent);
+        State.agent.runs = d.runs || [];
+        State.agent.sel = d.sel || "";
+        State.agent.summary = d.summary || null;
+        State.agent.page = d.page || null;
+        State.agent.loaded = true;
+        State.agent._p = Promise.resolve();
+      } catch (e) { State.agent.err = "预载数据解析失败：" + e.message; }
+    } else {
+      await ensureAgentLoaded();
+    }
+  }
   renderAll();
   if (await maybeLoadJob()) { if (State.wantTab) switchTab(State.wantTab); return; }
   await maybeAutorun();

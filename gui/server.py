@@ -35,9 +35,64 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from . import __version__, api  # noqa: E402
+from . import __version__, agent_api, api  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
+
+
+def _json_safe(o):
+    """NaN/Inf → None（递归）。见 ``tw.eval_agent.json_safe`` 的文档。"""
+    from tw.eval_agent import json_safe as _f
+    return _f(o)
+
+
+def _inject_agent_preload(html: bytes, query: dict,
+                          root: Path | None = None) -> bytes:
+    """把首屏数据作为 ``<script type="application/json">`` 嵌进 HTML。
+
+    ⚠️ **必须转义 ``</``**：JSON 里若出现 ``</script>``（比如某条决策的
+    理由里恰好写了它），浏览器会**提前结束脚本块**——那是注入，不是转义
+    的小毛病。JSON 里 ``<\\/`` 与 ``</`` 等价，替换后语义不变。
+
+    ``root`` 只为测试可注入而留（默认项目根）。**安全上不构成口子**：
+    它是 Python 侧参数，不是用户输入——URL 里能控制的只有 ``run``，
+    而那最终仍然要过 ``agent_api`` 的"只在扫描结果里查"。
+    """
+    try:
+        rid = (query.get("run") or [""])[0]
+        data = agent_api.first_paint(root or ROOT, rid)
+        # ⚠️ 同 CLI：NaN 不是合法 JSON，嵌进页面会让 JSON.parse 直接抛错，
+        # 整页退化成"读取失败"——而 Python 侧一切正常（它接受 NaN）。
+        blob = json.dumps(_json_safe(data), ensure_ascii=False,
+                          default=str, allow_nan=False)
+    except Exception as exc:  # noqa: BLE001
+        # ⚠️ 嵌数据失败**不能让页面打不开**：退回纯异步路径
+        # （前端发现没有预载块时会自己去取）。降级要比功能重要。
+        print(f"[gui] 首屏预载失败（退回异步加载）：{type(exc).__name__}: {exc}")
+        return html
+    blob = blob.replace("</", "<\\/")
+    tag = ('<script id="agentPreload" type="application/json">'
+           + blob + "</script>\n</body>")
+    return html.decode("utf-8").replace("</body>", tag, 1).encode("utf-8")
+
+
+def _qint(query: dict, key: str, default: int) -> int:
+    """从 ``parse_qs`` 的结果里取一个整数。
+
+    ⚠️ ``parse_qs`` 的值一律是**列表**（同一参数可以出现多次），
+    所以 ``int(query.get(k))`` 会抛 TypeError，而用户看到的是
+    **HTTP 500** 而不是"参数写错了"——把甲方错误报成服务端错误，
+    排查方向会被带偏。这里显式取第一个值，并给出可读的 400。
+    """
+    v = query.get(key)
+    if v is None:
+        return int(default)
+    first = v[0] if isinstance(v, (list, tuple)) and v else v
+    try:
+        return int(str(first).strip() or default)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} 必须是整数，收到 {first!r}") from None
+
 
 #: 端口 0 = 让系统分配空闲端口。写死端口会在"上一次没退干净"时启动失败，
 #: 而用户看到的只是一个 bind 错误，很难自己想明白。
@@ -108,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             if path == "/" or path == "/index.html":
-                return self._static("index.html")
+                return self._static("index.html", query=query)
             if path.startswith("/static/"):
                 return self._static(path[len("/static/") :])
             if path.startswith("/api/"):
@@ -145,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
         return obj
 
     # --- 静态文件 -----------------------------------------------------
-    def _static(self, rel: str) -> None:
+    def _static(self, rel: str, query: dict | None = None) -> None:
         rel = rel.lstrip("/\\")
         target = (STATIC / rel).resolve()
         # 目录穿越防护：解析后的路径必须仍在 static/ 里面
@@ -155,10 +210,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(403, "非法路径")
         if not target.is_file():
             return self._err(404, f"找不到 {rel}")
+        body = target.read_bytes()
+        # ⭐ A5：深链到 Agent 页时，把**首屏数据嵌进 HTML**。
+        # 理由见 ``agent_api.first_paint`` 的文档：异步首绘会让
+        # 无头截图/DOM dump 拍到占位图，而"检查有没有内容"会**通过**
+        # ——验证方式骗人比 bug 更危险。嵌数据后首屏是同步的、确定的。
+        # ⚠️ 只在 ``index.html`` 且显式带了 ``tab=agent`` 时做，
+        # 其它情况一个字节都不改。
+        if (target.name == "index.html" and query
+                and (query.get("tab") or [""])[0] == "agent"):
+            body = _inject_agent_preload(body, query)
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript",):
             ctype += "; charset=utf-8"
-        self._send(200, target.read_bytes(), ctype)
+        self._send(200, body, ctype)
 
     # --- API: GET -----------------------------------------------------
     def _api_get(self, path: str, query: dict) -> None:
@@ -183,6 +248,33 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(job.public())
         if path.startswith("/api/real/"):
             return self._json(api.real_payload(path[len("/api/real/") :]))
+        # ---- A5：Agent 决策留痕（**只读**，路径不接受用户输入）--------
+        if path == "/api/agent/runs":
+            return self._json(agent_api.list_runs(ROOT))
+        if path.startswith("/api/agent/run/"):
+            rest = path[len("/api/agent/run/") :]
+            try:
+                if rest.endswith("/decisions"):
+                    rid = rest[: -len("/decisions")]
+                    # ⚠️ ``parse_qs`` 的值是**列表**（同一参数可出现多次）。
+                    # 直接 ``int(query.get(...))`` 会抛 TypeError →
+                    # 用户看到的是 500，而不是"参数写错了"。
+                    return self._json(agent_api.decisions_page(
+                        ROOT, rid,
+                        offset=_qint(query, "offset", 0),
+                        limit=_qint(query, "limit", 50),
+                    ))
+                if rest.endswith("/summary"):
+                    return self._json(agent_api.run_summary(
+                        ROOT, rest[: -len("/summary")]))
+                if "/decision/" in rest:
+                    rid, _, idx = rest.partition("/decision/")
+                    return self._json(agent_api.decision_detail(ROOT, rid, int(idx)))
+                return self._json(agent_api.run_summary(ROOT, rest))
+            except KeyError as e:
+                return self._err(404, str(e))
+            except ValueError as e:
+                return self._err(400, f"参数不合法：{e}")
         if path.startswith("/api/export/"):
             name = path[len("/api/export/") :]
             job_id = name[:-4] if name.endswith(".csv") else name

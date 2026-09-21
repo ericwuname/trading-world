@@ -1,28 +1,28 @@
 {
   "config": {
-    "inst": "ETH-USDT-SWAP",
+    "inst": "BTC-USDT-SWAP",
     "bar": "1H",
-    "n": 120,
+    "n": 200,
     "equity": 100000.0,
     "lever": 3.0,
     "samples": 3,
     "temperature": 0.2,
-    "template": "v2",
+    "template": "v4",
     "provider": "agnes",
     "model": null,
     "slippage_bps": 1.0,
     "cost_multipliers": "1,2,5",
     "rules_only": false,
-    "replay": "docs/llm-run-20260921-a4/rec_ETH.jsonl.gz",
-    "record": "",
-    "out_json": "docs/llm-run-20260921-a4/eval_ETH.json",
-    "out_log": "",
+    "replay": "",
+    "record": "out/a5v4/rec_v4_BTC.jsonl",
+    "out_json": "out/a5v4/eval_v4_BTC.json",
+    "out_log": "out/a5v4/dec_v4_BTC.jsonl",
     "seed": 12345
   },
   "evals": {
     "noop": {
       "name": "noop",
-      "inst_id": "ETH-USDT-SWAP",
+      "inst_id": "BTC-USDT-SWAP",
       "bar": "1H",
       "run_id": "a4-noop",
       "meta": {
@@ -53,7 +53,7 @@
         "expire_unfilled": true
       },
       "decision": {
-        "n": 120,
+        "n": 200,
         "abstain_frac": 1.0,
         "parse_fail_frac": 0.0,
         "rejected_frac": 0.0,
@@ -64,10 +64,10 @@
         "external_ref_terms": {},
         "external_ref_frac": 0.0,
         "basis": {
-          "n": 120,
+          "n": 200,
           "n_declared": 0,
           "counts": {
-            "": 120
+            "": 200
           },
           "frac": {
             "": 1.0
@@ -83,10 +83,10 @@
         }
       },
       "execution": {
-        "n_decisions": 120,
+        "n_decisions": 200,
         "n_executed_intents": 0,
         "n_orders_built": 0,
-        "n_decisions_not_traded": 120,
+        "n_decisions_not_traded": 200,
         "fill_rate_of_orders": 0.0,
         "n_order_fills": 0,
         "n_exit_fills_tp_sl": 0,
@@ -115,7 +115,7 @@
         "turnover_x_equity": 0.0,
         "sharpe": null,
         "max_drawdown": 0.0,
-        "n_bars": 121,
+        "n_bars": 201,
         "n_trades": 0,
         "n_round_trips": 0,
         "bars_in_position": 0,
@@ -188,7 +188,7 @@
     },
     "momentum": {
       "name": "momentum",
-      "inst_id": "ETH-USDT-SWAP",
+      "inst_id": "BTC-USDT-SWAP",
       "bar": "1H",
       "run_id": "a4-momentum",
       "meta": {
@@ -199,15 +199,15 @@
         "n_samples": 1,
         "lever": 3.0,
         "exec": {
-          "n_submitted": 32,
-          "n_fills": 32,
+          "n_submitted": 44,
+          "n_fills": 43,
           "n_maker": 0,
-          "n_taker": 32,
-          "n_open_at_end": 0,
+          "n_taker": 43,
+          "n_open_at_end": 1,
           "n_expired": 0,
           "n_liquidations": 0,
-          "total_fees": 318.11495995025007,
-          "turnover": 636229.9199005
+          "total_fees": 419.8355135481,
+          "turnover": 839671.0270962
         }
       },
       "exec_config": {
@@ -219,21 +219,21 @@
         "expire_unfilled": true
       },
       "decision": {
-        "n": 120,
-        "abstain_frac": 0.075,
+        "n": 200,
+        "abstain_frac": 0.26,
         "parse_fail_frac": 0.0,
-        "rejected_frac": 0.6583333333333333,
+        "rejected_frac": 0.52,
         "resized_frac": 0.0,
-        "confidence_mean": 0.733622186157786,
-        "confidence_p50": 1.0,
+        "confidence_mean": 0.5430690822355091,
+        "confidence_p50": 0.5715117140239275,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
         "external_ref_frac": 0.0,
         "basis": {
-          "n": 120,
+          "n": 200,
           "n_declared": 0,
           "counts": {
-            "": 120
+            "": 200
           },
           "frac": {
             "": 1.0
@@ -249,22 +249,22 @@
         }
       },
       "execution": {
-        "n_decisions": 120,
-        "n_executed_intents": 32,
-        "n_orders_built": 32,
-        "n_decisions_not_traded": 88,
-        "fill_rate_of_orders": 1.0,
-        "n_order_fills": 32,
+        "n_decisions": 200,
+        "n_executed_intents": 44,
+        "n_orders_built": 44,
+        "n_decisions_not_traded": 156,
+        "fill_rate_of_orders": 0.9772727272727273,
+        "n_order_fills": 43,
         "n_exit_fills_tp_sl": 0,
         "n_liquidate_fills": 0,
-        "n_fills": 32,
+        "n_fills": 43,
         "fills_by_reason": {
-          "market": 32
+          "market": 43
         },
-        "slippage_bps_mean": 0.9999999999998785,
-        "slippage_bps_p50": 1.0000000000000733,
-        "slippage_bps_max": 1.0000000000007705,
-        "slippage_cost_total": 63.62259529999224,
+        "slippage_bps_mean": 0.9999999999998559,
+        "slippage_bps_p50": 0.9999999999998147,
+        "slippage_bps_max": 1.0000000000007654,
+        "slippage_cost_total": 83.96729179998788,
         "latency_ms_p50": 0,
         "latency_ms_max": 0,
         "n_expired_orders": 0,
@@ -272,119 +272,119 @@
       },
       "result": {
         "initial_equity": 100000.0,
-        "final_equity": 104120.03144474978,
-        "net_pnl": 4120.03144474978,
-        "net_return": 0.041200314447497804,
-        "gross_pnl": 4501.769000000022,
-        "gross_return": 0.04501769000000022,
-        "fees_paid": 318.11495995025,
-        "slippage_cost": 63.62259529999224,
-        "turnover": 636229.9199005,
-        "turnover_x_equity": 6.362299199005,
-        "sharpe": 13.546175825384179,
-        "max_drawdown": 0.013631051358965886,
-        "n_bars": 121,
-        "n_trades": 32,
+        "final_equity": 103848.18519465193,
+        "net_pnl": 3848.185194651931,
+        "net_return": 0.03848185194651931,
+        "gross_pnl": 4351.9880000000185,
+        "gross_return": 0.043519880000000184,
+        "fees_paid": 419.8355135481,
+        "slippage_cost": 83.96729179998788,
+        "turnover": 839671.0270962,
+        "turnover_x_equity": 8.396710270962,
+        "sharpe": 9.497776846966884,
+        "max_drawdown": 0.00988613797156443,
+        "n_bars": 201,
+        "n_trades": 43,
         "n_round_trips": 2,
-        "bars_in_position": 118,
-        "avg_holding_bars": 59.0,
-        "exposure_frac": 0.9752066115702479
+        "bars_in_position": 192,
+        "avg_holding_bars": 96.0,
+        "exposure_frac": 0.9552238805970149
       },
       "cost_sensitivity_analytic": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": 4120.03144474978,
-          "net_return": 0.041200314447497804,
+          "net_pnl": 3848.185194651931,
+          "net_return": 0.03848185194651931,
           "extra_cost": 0.0,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": 3738.293889499538,
-          "net_return": 0.03738293889499538,
-          "extra_cost": 381.7375552502423,
+          "net_pnl": 3344.382389303843,
+          "net_return": 0.03344382389303843,
+          "extra_cost": 503.8028053480879,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": 2593.081223748811,
-          "net_return": 0.025930812237488114,
-          "extra_cost": 1526.9502210009691,
+          "net_pnl": 1832.9739732595795,
+          "net_return": 0.018329739732595794,
+          "extra_cost": 2015.2112213923515,
           "method": "analytic_approx"
         }
       ],
       "n_skipped": 0,
       "confidence_calibration": {
-        "n": 107,
+        "n": 144,
         "horizon_bars": 4,
         "bins": [
           {
             "lo": 0.0,
             "hi": 0.4,
-            "n": 16,
-            "predicted_mean": 0.303627339151877,
-            "realized": 0.5625,
-            "gap": 0.258872660848123
+            "n": 27,
+            "predicted_mean": 0.2873127487418961,
+            "realized": 0.4444444444444444,
+            "gap": 0.1571316957025483
           },
           {
             "lo": 0.4,
             "hi": 0.6,
-            "n": 14,
-            "predicted_mean": 0.4726031383928716,
-            "realized": 0.5,
-            "gap": 0.027396861607128398
+            "n": 21,
+            "predicted_mean": 0.4827138266622668,
+            "realized": 0.38095238095238093,
+            "gap": -0.10176144570988588
           },
           {
             "lo": 0.6,
             "hi": 0.8,
-            "n": 12,
-            "predicted_mean": 0.6865335122513668,
-            "realized": 0.4166666666666667,
-            "gap": -0.26986684558470014
+            "n": 20,
+            "predicted_mean": 0.7038123857872753,
+            "realized": 0.3,
+            "gap": -0.40381238578727535
           },
           {
             "lo": 0.8,
             "hi": 1.01,
-            "n": 65,
-            "predicted_mean": 0.9895658281228873,
-            "realized": 0.6307692307692307,
-            "gap": -0.35879659735365654
+            "n": 76,
+            "predicted_mean": 0.9844457678257698,
+            "realized": 0.6578947368421053,
+            "gap": -0.32655103098366445
           }
         ],
-        "overall_realized": 0.5794392523364486,
-        "overall_predicted": 0.7853706760648066,
+        "overall_realized": 0.5277777777777778,
+        "overall_predicted": 0.7415872267114084,
         "note": "方向准确率，不含成本；样本小则每箱不稳定，请连同 n 一起读。弃权不参与校准。"
       },
       "cost_sensitivity_rerun": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": 4120.03144474978,
-          "net_return": 0.041200314447497804,
-          "n_trades": 32,
+          "net_pnl": 3848.185194651931,
+          "net_return": 0.03848185194651931,
+          "n_trades": 43,
           "n_liquidations": 0,
-          "max_drawdown": 0.013631051358965886,
+          "max_drawdown": 0.00988613797156443,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": 2411.419207312996,
-          "net_return": 0.02411419207312996,
-          "n_trades": 32,
+          "net_pnl": 3161.7007572732255,
+          "net_return": 0.03161700757273225,
+          "n_trades": 43,
           "n_liquidations": 0,
-          "max_drawdown": 0.014703652143074349,
+          "max_drawdown": 0.010480731408377223,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": 806.1110470762651,
-          "net_return": 0.008061110470762651,
-          "n_trades": 32,
+          "net_pnl": 434.56132420500217,
+          "net_return": 0.004345613242050021,
+          "n_trades": 43,
           "n_liquidations": 0,
-          "max_drawdown": 0.019545136377024486,
+          "max_drawdown": 0.014880045146255572,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
@@ -393,7 +393,7 @@
     },
     "meanrevert": {
       "name": "meanrevert",
-      "inst_id": "ETH-USDT-SWAP",
+      "inst_id": "BTC-USDT-SWAP",
       "bar": "1H",
       "run_id": "a4-meanrevert",
       "meta": {
@@ -404,15 +404,15 @@
         "n_samples": 1,
         "lever": 3.0,
         "exec": {
-          "n_submitted": 32,
-          "n_fills": 32,
+          "n_submitted": 44,
+          "n_fills": 43,
           "n_maker": 0,
-          "n_taker": 32,
-          "n_open_at_end": 0,
+          "n_taker": 43,
+          "n_open_at_end": 1,
           "n_expired": 0,
           "n_liquidations": 0,
-          "total_fees": 318.11099304975005,
-          "turnover": 636221.9860995
+          "total_fees": 420.05391979820007,
+          "turnover": 840107.8395964
         }
       },
       "exec_config": {
@@ -424,21 +424,21 @@
         "expire_unfilled": true
       },
       "decision": {
-        "n": 120,
-        "abstain_frac": 0.075,
+        "n": 200,
+        "abstain_frac": 0.26,
         "parse_fail_frac": 0.0,
-        "rejected_frac": 0.6583333333333333,
+        "rejected_frac": 0.52,
         "resized_frac": 0.0,
-        "confidence_mean": 0.733622186157786,
-        "confidence_p50": 1.0,
+        "confidence_mean": 0.5430690822355091,
+        "confidence_p50": 0.5715117140239275,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
         "external_ref_frac": 0.0,
         "basis": {
-          "n": 120,
+          "n": 200,
           "n_declared": 0,
           "counts": {
-            "": 120
+            "": 200
           },
           "frac": {
             "": 1.0
@@ -454,22 +454,22 @@
         }
       },
       "execution": {
-        "n_decisions": 120,
-        "n_executed_intents": 32,
-        "n_orders_built": 32,
-        "n_decisions_not_traded": 88,
-        "fill_rate_of_orders": 1.0,
-        "n_order_fills": 32,
+        "n_decisions": 200,
+        "n_executed_intents": 44,
+        "n_orders_built": 44,
+        "n_decisions_not_traded": 156,
+        "fill_rate_of_orders": 0.9772727272727273,
+        "n_order_fills": 43,
         "n_exit_fills_tp_sl": 0,
         "n_liquidate_fills": 0,
-        "n_fills": 32,
+        "n_fills": 43,
         "fills_by_reason": {
-          "market": 32
+          "market": 43
         },
-        "slippage_bps_mean": 0.9999999999998785,
-        "slippage_bps_p50": 1.0000000000000733,
-        "slippage_bps_max": 1.0000000000007705,
-        "slippage_cost_total": 63.62259529999224,
+        "slippage_bps_mean": 0.9999999999998602,
+        "slippage_bps_p50": 0.9999999999998147,
+        "slippage_bps_max": 1.0000000000007654,
+        "slippage_cost_total": 84.0105991999882,
         "latency_ms_p50": 0,
         "latency_ms_max": 0,
         "n_expired_orders": 0,
@@ -477,119 +477,119 @@
       },
       "result": {
         "initial_equity": 100000.0,
-        "final_equity": 95116.49741165024,
-        "net_pnl": -4883.502588349758,
-        "net_return": -0.048835025883497585,
-        "gross_pnl": -4501.769000000017,
-        "gross_return": -0.045017690000000166,
-        "fees_paid": 318.11099304975,
-        "slippage_cost": 63.62259529999224,
-        "turnover": 636221.9860995,
-        "turnover_x_equity": 6.362219860994999,
-        "sharpe": -15.889939428050715,
-        "max_drawdown": 0.059749028539639544,
-        "n_bars": 121,
-        "n_trades": 32,
+        "final_equity": 96385.74648100176,
+        "net_pnl": -3614.2535189982445,
+        "net_return": -0.03614253518998244,
+        "gross_pnl": -3110.1890000000567,
+        "gross_return": -0.031101890000000566,
+        "fees_paid": 420.0539197982,
+        "slippage_cost": 84.0105991999882,
+        "turnover": 840107.8395964,
+        "turnover_x_equity": 8.401078395964001,
+        "sharpe": -10.687492091972626,
+        "max_drawdown": 0.046616847477627496,
+        "n_bars": 201,
+        "n_trades": 43,
         "n_round_trips": 2,
-        "bars_in_position": 118,
-        "avg_holding_bars": 59.0,
-        "exposure_frac": 0.9752066115702479
+        "bars_in_position": 192,
+        "avg_holding_bars": 96.0,
+        "exposure_frac": 0.9552238805970149
       },
       "cost_sensitivity_analytic": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": -4883.502588349758,
-          "net_return": -0.048835025883497585,
+          "net_pnl": -3614.2535189982445,
+          "net_return": -0.03614253518998244,
           "extra_cost": 0.0,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": -5265.236176699501,
-          "net_return": -0.05265236176699501,
-          "extra_cost": 381.73358834974226,
+          "net_pnl": -4118.318037996432,
+          "net_return": -0.041183180379964324,
+          "extra_cost": 504.0645189981882,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": -6410.436941748727,
-          "net_return": -0.06410436941748728,
-          "extra_cost": 1526.934353398969,
+          "net_pnl": -5630.511594990998,
+          "net_return": -0.05630511594990998,
+          "extra_cost": 2016.2580759927528,
           "method": "analytic_approx"
         }
       ],
       "n_skipped": 0,
       "confidence_calibration": {
-        "n": 107,
+        "n": 144,
         "horizon_bars": 4,
         "bins": [
           {
             "lo": 0.0,
             "hi": 0.4,
-            "n": 16,
-            "predicted_mean": 0.303627339151877,
-            "realized": 0.4375,
-            "gap": 0.133872660848123
+            "n": 27,
+            "predicted_mean": 0.2873127487418961,
+            "realized": 0.5555555555555556,
+            "gap": 0.2682428068136595
           },
           {
             "lo": 0.4,
             "hi": 0.6,
-            "n": 14,
-            "predicted_mean": 0.4726031383928716,
-            "realized": 0.5,
-            "gap": 0.027396861607128398
+            "n": 21,
+            "predicted_mean": 0.4827138266622668,
+            "realized": 0.6190476190476191,
+            "gap": 0.13633379238535226
           },
           {
             "lo": 0.6,
             "hi": 0.8,
-            "n": 12,
-            "predicted_mean": 0.6865335122513668,
-            "realized": 0.5833333333333334,
-            "gap": -0.10320017891803346
+            "n": 20,
+            "predicted_mean": 0.7038123857872753,
+            "realized": 0.7,
+            "gap": -0.0038123857872753852
           },
           {
             "lo": 0.8,
             "hi": 1.01,
-            "n": 65,
-            "predicted_mean": 0.9895658281228873,
-            "realized": 0.36923076923076925,
-            "gap": -0.620335058892118
+            "n": 76,
+            "predicted_mean": 0.9844457678257698,
+            "realized": 0.34210526315789475,
+            "gap": -0.642340504667875
           }
         ],
-        "overall_realized": 0.4205607476635514,
-        "overall_predicted": 0.7853706760648066,
+        "overall_realized": 0.4722222222222222,
+        "overall_predicted": 0.7415872267114084,
         "note": "方向准确率，不含成本；样本小则每箱不稳定，请连同 n 一起读。弃权不参与校准。"
       },
       "cost_sensitivity_rerun": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": -4883.502588349758,
-          "net_return": -0.048835025883497585,
-          "n_trades": 32,
+          "net_pnl": -3614.2535189982445,
+          "net_return": -0.03614253518998244,
+          "n_trades": 43,
           "n_liquidations": 0,
-          "max_drawdown": 0.059749028539639544,
+          "max_drawdown": 0.046616847477627496,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": -5265.232209798982,
-          "net_return": -0.05265232209798982,
-          "n_trades": 32,
+          "net_pnl": -4118.319885592762,
+          "net_return": -0.041183198855927625,
+          "n_trades": 43,
           "n_liquidations": 0,
-          "max_drawdown": 0.062318614269849304,
+          "max_drawdown": 0.04949893810653383,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": -5117.77052415871,
-          "net_return": -0.0511777052415871,
-          "n_trades": 32,
+          "net_pnl": -5048.155943666192,
+          "net_return": -0.05048155943666192,
+          "n_trades": 41,
           "n_liquidations": 0,
-          "max_drawdown": 0.0567033880551886,
+          "max_drawdown": 0.05248714133892655,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
@@ -598,7 +598,7 @@
     },
     "random_taker": {
       "name": "random_taker",
-      "inst_id": "ETH-USDT-SWAP",
+      "inst_id": "BTC-USDT-SWAP",
       "bar": "1H",
       "run_id": "a4-random_taker",
       "meta": {
@@ -609,15 +609,15 @@
         "n_samples": 1,
         "lever": 3.0,
         "exec": {
-          "n_submitted": 32,
-          "n_fills": 32,
+          "n_submitted": 60,
+          "n_fills": 60,
           "n_maker": 0,
-          "n_taker": 32,
+          "n_taker": 60,
           "n_open_at_end": 0,
           "n_expired": 0,
           "n_liquidations": 0,
-          "total_fees": 317.90802724145,
-          "turnover": 635816.0544829
+          "total_fees": 585.7037928931001,
+          "turnover": 1171407.5857862
         }
       },
       "exec_config": {
@@ -629,21 +629,21 @@
         "expire_unfilled": true
       },
       "decision": {
-        "n": 120,
-        "abstain_frac": 0.6833333333333333,
+        "n": 200,
+        "abstain_frac": 0.675,
         "parse_fail_frac": 0.0,
-        "rejected_frac": 0.05,
+        "rejected_frac": 0.025,
         "resized_frac": 0.0,
-        "confidence_mean": 0.15833333333333333,
+        "confidence_mean": 0.1625,
         "confidence_p50": 0.0,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
         "external_ref_frac": 0.0,
         "basis": {
-          "n": 120,
+          "n": 200,
           "n_declared": 0,
           "counts": {
-            "": 120
+            "": 200
           },
           "frac": {
             "": 1.0
@@ -659,22 +659,22 @@
         }
       },
       "execution": {
-        "n_decisions": 120,
-        "n_executed_intents": 32,
-        "n_orders_built": 32,
-        "n_decisions_not_traded": 88,
+        "n_decisions": 200,
+        "n_executed_intents": 60,
+        "n_orders_built": 60,
+        "n_decisions_not_traded": 140,
         "fill_rate_of_orders": 1.0,
-        "n_order_fills": 32,
+        "n_order_fills": 60,
         "n_exit_fills_tp_sl": 0,
         "n_liquidate_fills": 0,
-        "n_fills": 32,
+        "n_fills": 60,
         "fills_by_reason": {
-          "market": 32
+          "market": 60
         },
-        "slippage_bps_mean": 0.9999999999998646,
-        "slippage_bps_p50": 0.9999999999998314,
-        "slippage_bps_max": 1.0000000000007705,
-        "slippage_cost_total": 63.58160589999138,
+        "slippage_bps_mean": 0.9999999999998914,
+        "slippage_bps_p50": 0.9999999999998884,
+        "slippage_bps_max": 1.0000000000007927,
+        "slippage_cost_total": 117.14036579998734,
         "latency_ms_p50": 0,
         "latency_ms_max": 0,
         "n_expired_orders": 0,
@@ -682,50 +682,50 @@
       },
       "result": {
         "initial_equity": 100000.0,
-        "final_equity": 103921.10536685854,
-        "net_pnl": 3921.1053668585373,
-        "net_return": 0.03921105366858537,
-        "gross_pnl": 4302.594999999979,
-        "gross_return": 0.04302594999999979,
-        "fees_paid": 317.90802724145,
-        "slippage_cost": 63.58160589999138,
-        "turnover": 635816.0544829,
-        "turnover_x_equity": 6.3581605448289995,
-        "sharpe": 16.980121374277953,
-        "max_drawdown": 0.006055505339822253,
-        "n_bars": 121,
-        "n_trades": 32,
-        "n_round_trips": 3,
-        "bars_in_position": 115,
-        "avg_holding_bars": 38.333333333333336,
-        "exposure_frac": 0.9504132231404959
+        "final_equity": 102881.71884130691,
+        "net_pnl": 2881.718841306909,
+        "net_return": 0.02881718841306909,
+        "gross_pnl": 3584.562999999996,
+        "gross_return": 0.03584562999999996,
+        "fees_paid": 585.7037928931001,
+        "slippage_cost": 117.14036579998734,
+        "turnover": 1171407.5857862,
+        "turnover_x_equity": 11.714075857862,
+        "sharpe": 8.657272031432873,
+        "max_drawdown": 0.015576274344067175,
+        "n_bars": 201,
+        "n_trades": 60,
+        "n_round_trips": 2,
+        "bars_in_position": 193,
+        "avg_holding_bars": 96.5,
+        "exposure_frac": 0.9601990049751243
       },
       "cost_sensitivity_analytic": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": 3921.1053668585373,
-          "net_return": 0.03921105366858537,
+          "net_pnl": 2881.718841306909,
+          "net_return": 0.02881718841306909,
           "extra_cost": 0.0,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": 3539.615733717096,
-          "net_return": 0.03539615733717096,
-          "extra_cost": 381.48963314144135,
+          "net_pnl": 2178.8746826138213,
+          "net_return": 0.02178874682613821,
+          "extra_cost": 702.8441586930874,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": 2395.146834292772,
-          "net_return": 0.02395146834292772,
-          "extra_cost": 1525.9585325657654,
+          "net_pnl": 70.34220653455941,
+          "net_return": 0.000703422065345594,
+          "extra_cost": 2811.3766347723495,
           "method": "analytic_approx"
         }
       ],
       "n_skipped": 0,
       "confidence_calibration": {
-        "n": 38,
+        "n": 63,
         "horizon_bars": 4,
         "bins": [
           {
@@ -739,10 +739,10 @@
           {
             "lo": 0.4,
             "hi": 0.6,
-            "n": 38,
+            "n": 63,
             "predicted_mean": 0.5,
-            "realized": 0.5526315789473685,
-            "gap": 0.052631578947368474
+            "realized": 0.4444444444444444,
+            "gap": -0.05555555555555558
           },
           {
             "lo": 0.6,
@@ -761,68 +761,68 @@
             "gap": null
           }
         ],
-        "overall_realized": 0.5526315789473685,
+        "overall_realized": 0.4444444444444444,
         "overall_predicted": 0.5,
         "note": "方向准确率，不含成本；样本小则每箱不稳定，请连同 n 一起读。弃权不参与校准。"
       },
       "cost_sensitivity_rerun": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": 3921.1053668585373,
-          "net_return": 0.03921105366858537,
-          "n_trades": 32,
+          "net_pnl": 2881.718841306909,
+          "net_return": 0.02881718841306909,
+          "n_trades": 60,
           "n_liquidations": 0,
-          "max_drawdown": 0.006055505339822253,
+          "max_drawdown": 0.015576274344067175,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": 3002.4928104464343,
-          "net_return": 0.030024928104464343,
-          "n_trades": 32,
+          "net_pnl": 1477.0759385879937,
+          "net_return": 0.014770759385879937,
+          "n_trades": 60,
           "n_liquidations": 0,
-          "max_drawdown": 0.009164258956888022,
+          "max_drawdown": 0.01677945889971824,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": 864.0635154162883,
-          "net_return": 0.008640635154162883,
-          "n_trades": 32,
+          "net_pnl": -1120.9196841374214,
+          "net_return": -0.011209196841374214,
+          "n_trades": 60,
           "n_liquidations": 0,
-          "max_drawdown": 0.012268168301272213,
+          "max_drawdown": 0.02327796149658738,
           "method": "rerun",
           "replay_coverage": null,
           "valid": true
         }
       ]
     },
-    "llm_v2": {
-      "name": "llm_v2",
-      "inst_id": "ETH-USDT-SWAP",
+    "llm_v4": {
+      "name": "llm_v4",
+      "inst_id": "BTC-USDT-SWAP",
       "bar": "1H",
-      "run_id": "a4-llm_v2",
+      "run_id": "a4-llm_v4",
       "meta": {
         "agent_id": "llm-agent-1",
-        "template": "v2",
+        "template": "v4",
         "policy": "",
-        "mode": "replay_nonet",
+        "mode": "live",
         "n_samples": 3,
         "lever": 3.0,
         "exec": {
-          "n_submitted": 20,
-          "n_fills": 22,
-          "n_maker": 8,
-          "n_taker": 14,
-          "n_open_at_end": 0,
+          "n_submitted": 49,
+          "n_fills": 64,
+          "n_maker": 13,
+          "n_taker": 51,
+          "n_open_at_end": 1,
           "n_expired": 2,
           "n_liquidations": 0,
-          "total_fees": 169.43763369201585,
-          "turnover": 417809.7439840316
+          "total_fees": 542.43384689775,
+          "turnover": 1236426.8777955
         }
       },
       "exec_config": {
@@ -834,26 +834,36 @@
         "expire_unfilled": true
       },
       "decision": {
-        "n": 120,
-        "abstain_frac": 0.7416666666666667,
+        "n": 200,
+        "abstain_frac": 0.725,
         "parse_fail_frac": 0.0,
-        "rejected_frac": 0.09166666666666666,
-        "resized_frac": 0.008333333333333333,
-        "confidence_mean": 0.6391743119266056,
-        "confidence_p50": 0.65,
+        "rejected_frac": 0.03,
+        "resized_frac": 0.0,
+        "confidence_mean": 0.726685393258427,
+        "confidence_p50": 0.72,
         "reason_usable_frac": 1.0,
         "external_ref_terms": {},
         "external_ref_frac": 0.0,
         "basis": {
-          "n": 120,
-          "n_declared": 0,
+          "n": 200,
+          "n_declared": 178,
           "counts": {
-            "": 120
+            "both": 104,
+            "rule": 67,
+            "": 22,
+            "judgment": 7
           },
           "frac": {
-            "": 1.0
+            "both": 0.52,
+            "rule": 0.335,
+            "": 0.11,
+            "judgment": 0.035
           },
-          "frac_of_declared": {},
+          "frac_of_declared": {
+            "both": 0.5842696629213483,
+            "rule": 0.37640449438202245,
+            "judgment": 0.03932584269662921
+          },
           "labels": {
             "rule": "照指标执行",
             "judgment": "凭自己判断",
@@ -864,75 +874,76 @@
         }
       },
       "execution": {
-        "n_decisions": 120,
-        "n_executed_intents": 20,
-        "n_orders_built": 20,
-        "n_decisions_not_traded": 100,
-        "fill_rate_of_orders": 0.9,
-        "n_order_fills": 18,
-        "n_exit_fills_tp_sl": 4,
+        "n_decisions": 200,
+        "n_executed_intents": 49,
+        "n_orders_built": 49,
+        "n_decisions_not_traded": 151,
+        "fill_rate_of_orders": 0.9387755102040817,
+        "n_order_fills": 46,
+        "n_exit_fills_tp_sl": 18,
         "n_liquidate_fills": 0,
-        "n_fills": 22,
+        "n_fills": 64,
         "fills_by_reason": {
-          "limit": 8,
-          "market": 10,
-          "sl": 4
+          "market": 33,
+          "limit": 13,
+          "tp": 4,
+          "sl": 14
         },
-        "slippage_bps_mean": 0.6363636363635854,
-        "slippage_bps_p50": 0.9999999999991591,
-        "slippage_bps_max": 1.0000000000006628,
-        "slippage_cost_total": 28.624894429675948,
-        "latency_ms_p50": 5126,
-        "latency_ms_max": 60659,
+        "slippage_bps_mean": 0.796874999999908,
+        "slippage_bps_p50": 0.9999999999997181,
+        "slippage_bps_max": 1.0000000000007654,
+        "slippage_cost_total": 98.38225389999148,
+        "latency_ms_p50": 6409,
+        "latency_ms_max": 52445,
         "n_expired_orders": 2,
         "n_liquidations": 0
       },
       "result": {
         "initial_equity": 100000.0,
-        "final_equity": 98099.48717507637,
-        "net_pnl": -1900.5128249236295,
-        "net_return": -0.019005128249236294,
-        "gross_pnl": -1702.4502968019376,
-        "gross_return": -0.017024502968019377,
-        "fees_paid": 169.43763369201582,
-        "slippage_cost": 28.624894429675948,
-        "turnover": 417809.7439840316,
-        "turnover_x_equity": 4.178097439840316,
-        "sharpe": -7.996328948366959,
-        "max_drawdown": 0.024934922833811365,
-        "n_bars": 121,
-        "n_trades": 22,
-        "n_round_trips": 7,
-        "bars_in_position": 103,
-        "avg_holding_bars": 14.714285714285714,
-        "exposure_frac": 0.8512396694214877
+        "final_equity": 100015.6488992023,
+        "net_pnl": 15.64889920229325,
+        "net_return": 0.0001564889920229325,
+        "gross_pnl": 656.4650000000347,
+        "gross_return": 0.006564650000000347,
+        "fees_paid": 542.43384689775,
+        "slippage_cost": 98.38225389999148,
+        "turnover": 1236426.8777955,
+        "turnover_x_equity": 12.364268777955,
+        "sharpe": 0.12685386362239953,
+        "max_drawdown": 0.009944233725472991,
+        "n_bars": 201,
+        "n_trades": 64,
+        "n_round_trips": 16,
+        "bars_in_position": 164,
+        "avg_holding_bars": 10.25,
+        "exposure_frac": 0.8159203980099502
       },
       "cost_sensitivity_analytic": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": -1900.5128249236295,
-          "net_return": -0.019005128249236294,
+          "net_pnl": 15.64889920229325,
+          "net_return": 0.0001564889920229325,
           "extra_cost": 0.0,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": -2098.575353045321,
-          "net_return": -0.020985753530453212,
-          "extra_cost": 198.06252812169177,
+          "net_pnl": -625.1672015954482,
+          "net_return": -0.006251672015954482,
+          "extra_cost": 640.8161007977415,
           "method": "analytic_approx"
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": -2692.7629374103967,
-          "net_return": -0.026927629374103968,
-          "extra_cost": 792.2501124867671,
+          "net_pnl": -2547.6155039886726,
+          "net_return": -0.025476155039886726,
+          "extra_cost": 2563.264403190966,
           "method": "analytic_approx"
         }
       ],
       "n_skipped": 0,
       "confidence_calibration": {
-        "n": 31,
+        "n": 52,
         "horizon_bars": 4,
         "bins": [
           {
@@ -946,80 +957,80 @@
           {
             "lo": 0.4,
             "hi": 0.6,
-            "n": 3,
-            "predicted_mean": 0.56,
-            "realized": 0.6666666666666666,
-            "gap": 0.10666666666666658
+            "n": 2,
+            "predicted_mean": 0.55,
+            "realized": 0.5,
+            "gap": -0.050000000000000044
           },
           {
             "lo": 0.6,
             "hi": 0.8,
-            "n": 27,
-            "predicted_mean": 0.67,
-            "realized": 0.2962962962962963,
-            "gap": -0.37370370370370376
+            "n": 45,
+            "predicted_mean": 0.6886666666666666,
+            "realized": 0.4666666666666667,
+            "gap": -0.22199999999999998
           },
           {
             "lo": 0.8,
             "hi": 1.01,
-            "n": 1,
-            "predicted_mean": 0.8,
-            "realized": 0.0,
-            "gap": -0.8
+            "n": 5,
+            "predicted_mean": 0.8480000000000001,
+            "realized": 0.6,
+            "gap": -0.2480000000000001
           }
         ],
-        "overall_realized": 0.3225806451612903,
-        "overall_predicted": 0.6635483870967742,
+        "overall_realized": 0.4807692307692308,
+        "overall_predicted": 0.6986538461538461,
         "note": "方向准确率，不含成本；样本小则每箱不稳定，请连同 n 一起读。弃权不参与校准。"
       },
       "cost_sensitivity_rerun": [
         {
           "cost_multiplier": 1.0,
-          "net_pnl": -1900.5128249236295,
-          "net_return": -0.019005128249236294,
-          "n_trades": 22,
+          "net_pnl": 15.64889920229325,
+          "net_return": 0.0001564889920229325,
+          "n_trades": 64,
           "n_liquidations": 0,
-          "max_drawdown": 0.024934922833811365,
+          "max_drawdown": 0.009944233725472991,
           "method": "rerun",
           "replay_coverage": 1.0,
           "valid": true
         },
         {
           "cost_multiplier": 2.0,
-          "net_pnl": 954.633663200002,
-          "net_return": 0.00954633663200002,
+          "net_pnl": -1012.9225230750017,
+          "net_return": -0.010129225230750017,
           "n_trades": 2,
           "n_liquidations": 0,
-          "max_drawdown": 0.0026078736599331846,
+          "max_drawdown": 0.014580458184215855,
           "method": "rerun",
-          "replay_coverage": 0.016666666666666666,
+          "replay_coverage": 0.01,
           "valid": false,
-          "invalid_reason": "回放覆盖率只有 1.7%（阈值 95%）：prompt 含账户状态 ⇒ 换成本后路径发散、大面积未命中，Agent 的弃权是**回放失败**造成的，不是策略行为。要测这一档必须**真的重跑**（花额度），不能用回放。"
+          "invalid_reason": "回放覆盖率只有 1.0%（阈值 95%）：prompt 含账户状态 ⇒ 换成本后路径发散、大面积未命中，Agent 的弃权是**回放失败**造成的，不是策略行为。要测这一档必须**真的重跑**（花额度），不能用回放。"
         },
         {
           "cost_multiplier": 5.0,
-          "net_pnl": 905.0498450000014,
-          "net_return": 0.009050498450000014,
+          "net_pnl": -1084.2445317187376,
+          "net_return": -0.010842445317187376,
           "n_trades": 2,
           "n_liquidations": 0,
-          "max_drawdown": 0.0026081850262380355,
+          "max_drawdown": 0.014949495788088001,
           "method": "rerun",
-          "replay_coverage": 0.016666666666666666,
+          "replay_coverage": 0.01,
           "valid": false,
-          "invalid_reason": "回放覆盖率只有 1.7%（阈值 95%）：prompt 含账户状态 ⇒ 换成本后路径发散、大面积未命中，Agent 的弃权是**回放失败**造成的，不是策略行为。要测这一档必须**真的重跑**（花额度），不能用回放。"
+          "invalid_reason": "回放覆盖率只有 1.0%（阈值 95%）：prompt 含账户状态 ⇒ 换成本后路径发散、大面积未命中，Agent 的弃权是**回放失败**造成的，不是策略行为。要测这一档必须**真的重跑**（花额度），不能用回放。"
         }
       ]
     }
   },
   "comparison": {
-    "target": "llm_v2",
+    "target": "llm_v4",
     "metric": "per_bar_return_mean",
-    "target_point": -0.00015818973531529223,
+    "target_point": 1.1254037903773994e-06,
     "target_ci": [
-      -0.0004213900147199717,
-      0.00017868049176356833
+      -7.80772472383162e-05,
+      8.768640374789509e-05
     ],
-    "n_bars": 120,
+    "n_bars": 200,
     "bootstrap": {
       "n_boot": 2000,
       "block": 24,
@@ -1028,13 +1039,13 @@
     },
     "verdicts": [
       {
-        "name_a": "llm_v2",
+        "name_a": "llm_v4",
         "name_b": "noop",
-        "point_a": -0.00015818973531529223,
+        "point_a": 1.1254037903773994e-06,
         "point_b": 0.0,
         "ci_a": [
-          -0.0004213900147199717,
-          0.00017868049176356833
+          -7.80772472383162e-05,
+          8.768640374789509e-05
         ],
         "ci_b": [
           0.0,
@@ -1042,84 +1053,84 @@
         ],
         "overlap_length": null,
         "overlap_fraction": null,
-        "point_diff": -0.00015818973531529223,
+        "point_diff": 1.1254037903773994e-06,
         "verdict": "依然无法判定",
         "direction": null,
         "required_n": null,
-        "reason": "基线区间宽度为 0（noop 的收益恒为 0），重叠比例无意义 ⇒ 改用「CI 是否排除基准值」：目标 95% 区间 [-4.2139, +1.7868] bp/根 包含 +0.0000",
+        "reason": "基线区间宽度为 0（noop 的收益恒为 0），重叠比例无意义 ⇒ 改用「CI 是否排除基准值」：目标 95% 区间 [-0.7808, +0.8769] bp/根 包含 +0.0000",
         "test": "ci_excludes_baseline",
         "threshold": null
       },
       {
-        "name_a": "llm_v2",
+        "name_a": "llm_v4",
         "name_b": "momentum",
-        "point_a": -0.00015818973531529223,
-        "point_b": 0.00033922333374400703,
+        "point_a": 1.1254037903773994e-06,
+        "point_b": 0.00019056402622755875,
         "ci_a": [
-          -0.0004213900147199717,
-          0.00017868049176356833
+          -7.80772472383162e-05,
+          8.768640374789509e-05
         ],
         "ci_b": [
-          -4.924611302900654e-05,
-          0.0008379252342053612
+          -6.683755661326025e-05,
+          0.0004977843937485396
         ],
-        "overlap_length": 0.00022792660479257487,
-        "overlap_fraction": 0.37983304016763386,
-        "point_diff": 0.0004974130690592992,
+        "overlap_length": 0.00015452396036115534,
+        "overlap_fraction": 0.932194479560595,
+        "point_diff": 0.00018943862243718136,
         "verdict": "依然无法判定",
         "direction": null,
-        "required_n": 268.1946244012012,
-        "reason": "重叠占较窄区间的 38.0%（> 30% 判为无法判定）；要让两区间分开约需 268 个样本（现用 120 个）",
+        "required_n": 743.2541734741103,
+        "reason": "重叠占较窄区间的 93.2%（> 30% 判为无法判定）；要让两区间分开约需 743 个样本（现用 200 个）",
         "threshold": 0.3,
         "test": "ci_overlap"
       },
       {
-        "name_a": "llm_v2",
+        "name_a": "llm_v4",
         "name_b": "meanrevert",
-        "point_a": -0.00015818973531529223,
-        "point_b": -0.0004141836457575339,
+        "point_a": 1.1254037903773994e-06,
+        "point_b": -0.00018276462754840183,
         "ci_a": [
-          -0.0004213900147199717,
-          0.00017868049176356833
+          -7.80772472383162e-05,
+          8.768640374789509e-05
         ],
         "ci_b": [
-          -0.0009098231260093375,
-          -2.5743565965235158e-05
+          -0.00040310941987200833,
+          1.0559751530701874e-05
         ],
-        "overlap_length": 0.00039564644875473654,
-        "overlap_fraction": 0.6593332691407474,
-        "point_diff": -0.0002559939104422417,
+        "overlap_length": 8.863699876901808e-05,
+        "overlap_fraction": 0.5347191512836018,
+        "point_diff": -0.00018389003133877923,
         "verdict": "依然无法判定",
         "direction": null,
-        "required_n": 1008.3646620970324,
-        "reason": "重叠占较窄区间的 65.9%（> 30% 判为无法判定）；要让两区间分开约需 1008 个样本（现用 120 个）",
+        "required_n": 496.4320541126222,
+        "reason": "重叠占较窄区间的 53.5%（> 30% 判为无法判定）；要让两区间分开约需 496 个样本（现用 200 个）",
         "threshold": 0.3,
         "test": "ci_overlap"
       },
       {
-        "name_a": "llm_v2",
+        "name_a": "llm_v4",
         "name_b": "random_taker",
-        "point_a": -0.00015818973531529223,
-        "point_b": 0.0003221233585964406,
+        "point_a": 1.1254037903773994e-06,
+        "point_b": 0.0001432454673458383,
         "ci_a": [
-          -0.0004213900147199717,
-          0.00017868049176356833
+          -7.80772472383162e-05,
+          8.768640374789509e-05
         ],
         "ci_b": [
-          4.081203307935433e-05,
-          0.0006615936933623242
+          -8.254076898484522e-05,
+          0.00043092687916798504
         ],
-        "overlap_length": 0.000137868458684214,
-        "overlap_fraction": 0.22975376592349775,
-        "point_diff": 0.0004803130939117328,
-        "verdict": "边缘",
+        "overlap_length": 0.00016576365098621129,
+        "overlap_fraction": 1.0,
+        "point_diff": 0.00014212006355546092,
+        "verdict": "依然无法判定",
         "direction": null,
-        "required_n": 193.8199865007482,
-        "reason": "重叠占较窄区间的 23.0%，落在 20%~30% 的中间地带——不强行归类，需人工判断",
+        "required_n": 1142.0749303415707,
+        "reason": "重叠占较窄区间的 100.0%（> 30% 判为无法判定）；要让两区间分开约需 1142 个样本（现用 200 个）",
         "threshold": 0.3,
         "test": "ci_overlap"
       }
     ]
   },
-  "target": "llm_v2"
+  "target": "llm_v4"
 }

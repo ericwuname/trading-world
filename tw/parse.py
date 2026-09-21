@@ -45,6 +45,10 @@ from typing import Any
 #: 内部规范字段（= 风控层的输入契约，见 ``tw/risk.py``）。
 CANONICAL_KEYS: tuple[str, ...] = (
     "action", "sz", "ordType", "px", "tp", "sl", "confidence", "reason",
+    #: ⭐ 决策依据自报（v4 起）。**只记录，不参与风控**——
+    #: 它与"下不下单"无关，风控也不看它。加进规范键是为了
+    #: 让它能落进 ``parsed``、进而可被统计。
+    "basis",
 )
 
 #: 必填字段——缺了算解析失败（``reason`` 不算必填：模型偶尔会把理由
@@ -94,7 +98,50 @@ _ALIASES: dict[str, str] = {
     "reasoning": "reason",
     "rationale": "reason",
     "explanation": "reason",
+    # 决策依据自报（v4）
+    "basis": "basis",
+    "basis_type": "basis",
+    "decision_basis": "basis",
+    "依据": "basis",
 }
+
+#: ``basis`` 的取值归一化。**只认这三种**——多出来的取值宁可归到"未自报"，
+#: 也不要猜（猜错会把"模型没按要求填"这个信号抹掉）。
+_BASIS_ALIASES: dict[str, str] = {
+    "rule": "rule", "rules": "rule", "rule_based": "rule",
+    "indicator": "rule", "indicators": "rule", "指标": "rule",
+    "公式": "rule", "规则": "rule",
+    "judgment": "judgment", "judgement": "judgment", "discretionary": "judgment",
+    "intuition": "judgment", "subjective": "judgment", "discretion": "judgment",
+    "判断": "judgment", "主观": "judgment",
+    "both": "both", "mixed": "both", "combination": "both", "hybrid": "both",
+    "两者": "both", "结合": "both",
+}
+
+#: 中文短语的**兜底**归一化：按词族匹配，且**只在恰好命中一族时**才采用。
+#: ⚠️ 为什么不用朴素 substring：``"既看了指标也凭判断"`` 同时命中两族，
+#: 那种情况**必须**判"未自报"而不是猜——猜错会把"模型没按要求填"
+#: 这个信号抹掉，而 v4 观察的正是它。
+#: （与 ``_is_leaky_key`` 同一条教训：归一化要**限定边界**，
+#: 否则要么误杀、要么瞎猜。）
+_BASIS_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("rule", ("指标", "规则", "公式", "按算好的")),
+    ("judgment", ("判断", "主观", "直觉", "盘感", "经验")),
+    ("both", ("结合", "两者", "同时", "兼顾", "综合")),
+)
+
+
+def _canon_basis(raw: Any) -> str:
+    """把模型写的 `basis` 归一化。认不出就返回 ``""``（未自报）。"""
+    if raw is None:
+        return ""
+    key = str(raw).strip().lower().replace(" ", "_")
+    hit = _BASIS_ALIASES.get(key)
+    if hit:
+        return hit
+    s = str(raw)
+    matched = {fam for fam, words in _BASIS_FAMILIES if any(w in s for w in words)}
+    return matched.pop() if len(matched) == 1 else ""
 
 #: 动作名归一化（模型爱写 ``close`` / ``long`` / ``flat``）。
 _ACTION_ALIASES: dict[str, str] = {
@@ -324,6 +371,19 @@ def parse_decision(text: str) -> ParseResult:
     # ---- 理由（只做类型规范，不判好坏）--------------------------------
     r = parsed.get("reason")
     parsed["reason"] = "" if r is None else str(r)
+
+    # ---- 决策依据自报（v4）--------------------------------------------
+    # ⚠️ **认不出就记** ``""``（未自报）**而不是猜一个**。
+    # 猜错会把"模型没按要求填"这个信号抹掉——而那正是 v4 要观察的东西。
+    # ⚠️ 缺这个字段**不算解析失败**：v1~v3 本来就没有它。
+    b_raw = parsed.get("basis")
+    if b_raw is None:
+        parsed["basis"] = ""
+    else:
+        canon = _canon_basis(b_raw)
+        parsed["basis"] = canon
+        if not canon:
+            parsed["_raw_basis"] = b_raw
 
     # ---- 必填校验 -----------------------------------------------------
     missing = [k for k in REQUIRED_CANONICAL if not parsed.get(k)]
