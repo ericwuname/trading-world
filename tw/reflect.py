@@ -151,11 +151,35 @@ class Exp:
         return cls(
             exp_id=str(d.get("exp_id", "")),
             created_tick=int(d.get("created_tick", 0)),
-            condition=dict(d.get("condition") or {}),
+            condition=safe_condition(d.get("condition")),
             lesson=str(d.get("lesson", "")),
             evidence_ids=list(d.get("evidence_ids") or []),
             kind=str(d.get("kind", "observation")),
         )
+
+
+def safe_condition(raw: Any) -> dict[str, Any]:
+    """把模型给的 ``condition`` 归一化成 dict。
+
+    ⚠️⚠️ **这是被一次真崩溃逼出来的**（2026-09-21，v5 的 L=50 复盘直接抛错）：
+
+    ```
+    ValueError: dictionary update sequence element #0 has length 1; 2 is required
+      at  "condition": dict(e.get("condition") or {}),
+    ```
+
+    原因：模型把 `condition` 写成了**字符串**（或列表），而 `dict("abc")`
+    会把它当成"键值对序列"去解包 ⇒ 抛 `ValueError` ⇒
+    **整份复盘崩掉**（不是丢一条，是整个 run 死）。
+
+    ⇒ 判据：**解析层对"类型不符"必须宽容，只是不采信**。
+    这不是"帮模型改数"（那是指**修正数值**），而是"**不因为一个字段类型不对
+    就把整批结果丢掉**"。两者的区别在于：前者会凭空造出内容，后者只是置空。
+
+    ⚠️ 返回空 dict 是**有损**的 ⇒ 调用方应当把"归一化过的条数"报出来，
+    否则"模型没给 condition"与"模型给错了 condition"看起来一样。
+    """
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def make_exp_id(*, created_tick: int, lesson: str,
@@ -455,7 +479,14 @@ _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 #: 抢救用：从**被截断**的 JSON 里抠出已经完整的那几条。
 _ATTR_OBJ = re.compile(
     r'\{\s*"decision_id"\s*:\s*"([^"]*)"\s*,\s*"reason"\s*:\s*"([^"]*)"\s*\}')
-_EXP_OBJ = re.compile(r'\{\s*"lesson"\s*:\s*"((?:[^"\\]|\\.)*)"')
+#: ⚠️ **不要要求 `lesson` 出现在对象开头**。
+#: 第一版写成 `\{\s*"lesson"\s*:` ⇒ 而真实输出是
+#: `{"condition": {...}, "lesson": "...", "kind": ...}`（`lesson` 在第二位）
+#: ⇒ **经验的抢救在实践中从不生效**，而"抢救成功"仍会返回 True
+#: （因为归因那几条救回来了）⇒ 静默丢了全部经验。
+#: 这是"测试缺口 → 变异漏网（M109）→ 补测试 → 又抓出一个真 bug"的连锁。
+_LESSON = re.compile(r'"lesson"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_COND = re.compile(r'"condition"\s*:\s*(\{[^{}]*\})')
 
 
 def _repair_truncated(text: str) -> tuple[list, list]:
@@ -476,16 +507,33 @@ def _repair_truncated(text: str) -> tuple[list, list]:
         r = reason.strip()
         attrs.append({"decision_id": did,
                       "reason": r if r in ATTR_REASONS else "unclear"})
+
     exps: list[dict[str, Any]] = []
-    for m in _EXP_OBJ.finditer(text):
+    for m in _LESSON.finditer(text):
         try:
             lesson = json.loads('"' + m.group(1) + '"')
         except (ValueError, TypeError):
             lesson = m.group(1)
         lesson = str(lesson).strip()
-        if lesson:
-            exps.append({"condition": {}, "lesson": lesson,
-                         "kind": "observation", "evidence_ids": []})
+        if not lesson:
+            continue
+        # ⚠️ 往前 200 字符找**最近的** `condition`（取最后一个匹配）。
+        # 限窗口是防止把**上一条**的 condition 配到这一条上；
+        # 配不到就退化成空 dict，**不编**。
+        cond: dict[str, Any] = {}
+        head = text[max(0, m.start() - 200):m.start()]
+        cm = None
+        for cm in _COND.finditer(head):
+            pass
+        if cm is not None:
+            try:
+                got = json.loads(cm.group(1))
+                if isinstance(got, dict):
+                    cond = got
+            except (ValueError, TypeError):
+                cond = {}
+        exps.append({"condition": cond, "lesson": lesson,
+                     "kind": "observation", "evidence_ids": []})
     return attrs, exps
 
 
@@ -556,7 +604,7 @@ def parse_review(text: str) -> dict[str, Any]:
         if not lesson:
             continue
         res["experiences"].append({
-            "condition": dict(e.get("condition") or {}),
+            "condition": safe_condition(e.get("condition")),
             "lesson": lesson,
             "kind": kind,
             "evidence_ids": [str(x) for x in (e.get("evidence_ids") or [])],
@@ -584,7 +632,7 @@ def merits_to_store(
             exp_id=make_exp_id(created_tick=int(created_tick),
                                lesson=lesson, evidence_ids=ev),
             created_tick=int(created_tick),
-            condition=dict(e.get("condition") or {}),
+            condition=safe_condition(e.get("condition")),
             lesson=lesson,
             evidence_ids=ev,
             kind=str(e.get("kind", "observation")),
@@ -623,4 +671,5 @@ __all__ = [
     "duplicate_rate",
     "exp_lines",
     "review_at_tick",
+    "safe_condition",
 ]

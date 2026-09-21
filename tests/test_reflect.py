@@ -390,6 +390,172 @@ class TestParseReview(unittest.TestCase):
 
 
 # ======================================================================
+# ⭐⭐ 截断抢救：这条路径曾经**完全没有测试**
+# ======================================================================
+class TestSalvageTruncatedOutput(unittest.TestCase):
+    """⚠️⭐ 由 **M109 漏网** 暴露出的真测试缺口（2026-09-21）。
+
+    我实现了「输出被 `max_tokens` 截断时按条目抢救」（实测救回 12/24），
+    但**一个测试都没写**——原来那条"坏 JSON"用例喂的是 `"{这不是: json}"`，
+    里面**没有任何结构完整的条目** ⇒ 抢救必然返回空 ⇒ 走的永远是失败分支。
+    ⇒ 变异体把抢救关掉（`_repair_truncated` 直接返回空）时**没有任何测试发现**。
+
+    ⭐ 这是本项目「**断言存在 ≠ 有分辨力**」的第 N 次实例：
+    「有一条测试覆盖了 `parse_review` 的异常分支」≠
+    「有一条测试覆盖了**抢救成功**那条分支」。
+    **变异测试存在的意义就是把这个差别找出来。**
+    """
+
+    def _truncated(self) -> str:
+        """一段**真的被截断**的输出（模拟 `max_tokens` 不够时模型停下）。
+
+        ⚠️ 用 `join` 拼而不是写 `\\n` 转义：我第一版就是用转义写的，
+        结果在**生成脚本**里 `\\n` 先被解释成了真换行，把测试文件写坏了。
+        「拿字符串拼代码」这件事本身就该少做。
+        """
+        return "\n".join([
+            "```json",
+            "{",
+            '  "attributions": [',
+            '    {"decision_id": "d1", "reason": "lucky"},',
+            '    {"decision_id": "d2", "reason": "timing_wrong"},',
+            '    {"decision_id": "d3", "reason": "should_abstain"},',
+            '    {"decision_id": "d4", "reason": "dir',   # ← 在这里被切断
+        ])
+
+    def test_截断时能抢救出完整条目(self):
+        """⭐⭐ **本组的核心**：前面 3 条结构完整的必须被救回来。"""
+        from tw.reflect import parse_review
+        p = parse_review(self._truncated())
+        self.assertTrue(p["ok"], f"抢救失败：{p['error']}")
+        self.assertTrue(p["repaired"], "必须标记为「抢救过」")
+        self.assertEqual([a["decision_id"] for a in p["attributions"]],
+                         ["d1", "d2", "d3"])
+        self.assertIn("截断", p["error"])
+
+    def test_没被截断时不该标repaired(self):
+        """⚠️ 分辨力补强：正常输出**不许**被标成 `repaired`
+        （否则"抢救过"这个标记就失去信息量）。"""
+        import json as _j
+        from tw.reflect import parse_review
+        p = parse_review(_j.dumps(
+            {"attributions": [{"decision_id": "d1", "reason": "lucky"}],
+             "experiences": []}, ensure_ascii=False))
+        self.assertTrue(p["ok"])
+        self.assertFalse(p["repaired"])
+
+    def test_抢救出的非法reason也落unclear(self):
+        """抢救路径**不能绕过** reason 的校验。"""
+        from tw.reflect import parse_review
+        txt = ('{"attributions": [{"decision_id": "d1", "reason": "我编的"},'
+               ' {"decision_id": "d2", "reason": "luc')
+        p = parse_review(txt)
+        self.assertTrue(p["ok"])
+        self.assertEqual(p["attributions"][0]["reason"], "unclear")
+
+    def test_抢救出经验(self):
+        """经验条目也要能被救回来（它们同样会被截断切掉）。"""
+        from tw.reflect import parse_review
+        txt = "\n".join([
+            '{"attributions": [], "experiences": [',
+            '  {"condition": {}, "lesson": "别追高", "kind": "warning"},',
+            '  {"condition": {}, "lesson": "别接飞',
+        ])
+        p = parse_review(txt)
+        self.assertTrue(p["ok"])
+        self.assertTrue(p["repaired"])
+        self.assertEqual(len(p["experiences"]), 1)
+        self.assertEqual(p["experiences"][0]["lesson"], "别追高")
+
+    def test_一个完整条目都没有时仍算失败(self):
+        """⚠️ 抢救的边界：**没有任何完整条目**时不许假装成功
+        （否则"抢救"会变成"永远 ok"，把真正的失败藏起来）。"""
+        from tw.reflect import parse_review
+        p = parse_review('{"attributions": [{"decision_id": "d1", "rea')
+        self.assertFalse(p["ok"])
+        self.assertEqual(p["attributions"], [])
+
+
+# ======================================================================
+# ⚠️⭐ condition 的类型容错（由一次**真崩溃**逼出来）
+# ======================================================================
+class TestConditionTypeTolerance(unittest.TestCase):
+    """模型把 `condition` 写成字符串/列表时，**不许把整份复盘弄崩**。
+
+    实测（2026-09-21，v5 的 L=50 复盘）：
+    ```
+    ValueError: dictionary update sequence element #0 has length 1; 2 is required
+      at  "condition": dict(e.get("condition") or {}),
+    ```
+    ⇒ 不是丢一条，是**整个 run 死掉**。
+
+    ⚠️ 判据要分清：**"解析层宽容" ≠ "帮模型改数"**。
+    - 帮模型改数（禁止）：把 `10350` 修正成 `103.5` ⇒ **凭空造内容**。
+    - 类型容错（必须）：`condition` 不是 dict 就置空 ⇒ **不采信，但不连带丢别的**。
+    """
+
+    def test_condition是字符串时不崩(self):
+        import json as _j
+        from tw.reflect import parse_review
+        p = parse_review(_j.dumps({
+            "attributions": [],
+            "experiences": [{"condition": "上涨趋势", "lesson": "别追高"}]},
+            ensure_ascii=False))
+        self.assertTrue(p["ok"])
+        self.assertEqual(len(p["experiences"]), 1)
+        self.assertEqual(p["experiences"][0]["condition"], {})
+        self.assertEqual(p["experiences"][0]["lesson"], "别追高")
+
+    def test_condition是列表时不崩(self):
+        import json as _j
+        from tw.reflect import parse_review
+        p = parse_review(_j.dumps({
+            "attributions": [],
+            "experiences": [{"condition": ["a", "b"], "lesson": "L"}]},
+            ensure_ascii=False))
+        self.assertTrue(p["ok"])
+        self.assertEqual(p["experiences"][0]["condition"], {})
+
+    def test_condition是数字时不崩(self):
+        import json as _j
+        from tw.reflect import parse_review
+        p = parse_review(_j.dumps({
+            "attributions": [],
+            "experiences": [{"condition": 3, "lesson": "L"}]},
+            ensure_ascii=False))
+        self.assertTrue(p["ok"])
+
+    def test_condition是dict时原样保留(self):
+        """⚠️ 分辨力补强：容错**不能**把正常情况也一起清空。"""
+        import json as _j
+        from tw.reflect import parse_review
+        p = parse_review(_j.dumps({
+            "attributions": [],
+            "experiences": [{"condition": {"regime": "trend_up"},
+                             "lesson": "L"}]}, ensure_ascii=False))
+        self.assertEqual(p["experiences"][0]["condition"],
+                         {"regime": "trend_up"})
+
+    def test_safe_condition直接测(self):
+        from tw.reflect import safe_condition
+        self.assertEqual(safe_condition({"a": 1}), {"a": 1})
+        self.assertEqual(safe_condition(None), {})
+        self.assertEqual(safe_condition("x"), {})
+        self.assertEqual(safe_condition(["x"]), {})
+        self.assertEqual(safe_condition(3), {})
+
+    def test_merits_to_store也容错(self):
+        """入库存的那一步同样是强转点（`Exp(...)` 的构造）。"""
+        from tw.reflect import merits_to_store
+        exps = merits_to_store(
+            {"experiences": [{"condition": "字符串", "lesson": "L"}]},
+            created_tick=5)
+        self.assertEqual(len(exps), 1)
+        self.assertEqual(exps[0].condition, {})
+        self.assertEqual(exps[0].to_dict()["condition"], {})
+
+
+# ======================================================================
 # 经验入库：created_tick 由**外部时钟**决定
 # ======================================================================
 class TestMeritsToStore(unittest.TestCase):

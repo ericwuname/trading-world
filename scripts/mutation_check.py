@@ -1852,6 +1852,22 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M114',
+        '解析层对 `condition` **类型不符时直接强转**（`dict(e.get("condition") or {})`）'
+        '——模型把它写成字符串/列表时 `dict("abc")` 会当成键值对序列去解包 ⇒ '
+        '抛 `ValueError` ⇒ **整份复盘崩掉**（不是丢一条，是整个 run 死）。'
+        '实测于 v5 的 L=50 复盘。'
+        '⚠️ 判据要分清：**"解析层宽容"≠"帮模型改数"**——'
+        '修正数值是凭空造内容（禁止），类型不符就置空只是不采信（必须）',
+        [
+            (
+                'tw/reflect.py',
+                '            "condition": safe_condition(e.get("condition")),\n',
+                '            "condition": dict(e.get("condition") or {}),\n',
+            ),
+        ],
+    ),
 
 ]
 
