@@ -1314,12 +1314,12 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
         [
             (
                 'tw/agent.py',
-                '        n_ok = sum(1 for p in parsed_list if p.get("action"))\n'
-                '        vote = consistency(parsed_list)\n',
-                '        n_ok = sum(1 for p in parsed_list if p.get("action"))\n'
-                '        vote = consistency(parsed_list)\n'
-                '        if n_ok == 0:\n'
-                '            n_ok = 1\n',
+                '            n_ok = sum(1 for p in parsed_list if p.get("action"))\n'
+                '            vote = consistency(parsed_list)\n',
+                '            n_ok = sum(1 for p in parsed_list if p.get("action"))\n'
+                '            vote = consistency(parsed_list)\n'
+                '            if n_ok == 0:\n'
+                '                n_ok = 1\n',
             ),
         ],
     ),
@@ -1336,6 +1336,138 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
                 '        step = 10.0 ** exp\n'
                 '        return max(step, math.floor(raw / step) * step)\n',
                 '        return raw\n',
+            ),
+        ],
+    ),
+    # ==================================================================
+    # A4：执行模拟 + 规则基线 + 分层评估（2026-09-21 第十轮）
+    # 这批的目标是**数字类的静默失效**：回测/收益算错了看不出来。
+    # ==================================================================
+    (
+        'M85',
+        '执行器允许订单在**提交的那一根**就成交（决策与成交不错开）'
+        '——等于让订单回到过去成交，收益凭空变好，而且完全不报错。'
+        '这是 bar 级回测最经典的未来函数',
+        [
+            (
+                'tw/simexec.py',
+                '            if i <= oo.submit_bar:\n'
+                '                still.append(oo)\n'
+                '                continue\n',
+                '            if i < oo.submit_bar:\n'
+                '                still.append(oo)\n'
+                '                continue\n',
+            ),
+        ],
+    ),
+    (
+        'M86',
+        '同根内 TP 与 SL 都触及时按 **TP** 处理（乐观解）'
+        '——bar 级回测看不到当根内的价格路径，两个都碰到时选谁是一次'
+        '**不可回避的假设**。选 TP 会让回测变好看，而这正是'
+        '"偏乐观的回测让人以为策略能上线"的机制。本项目显式选 SL（悲观）',
+        [
+            (
+                'tw/simexec.py',
+                '        if hit_sl:\n'
+                '            reason, px = "sl", float(a.sl_trigger_px)\n'
+                '        else:\n'
+                '            reason, px = "tp", float(a.tp_trigger_px)\n',
+                '        if hit_tp:\n'
+                '            reason, px = "tp", float(a.tp_trigger_px)\n'
+                '        else:\n'
+                '            reason, px = "sl", float(a.sl_trigger_px)\n',
+            ),
+        ],
+    ),
+    (
+        'M87',
+        '市价单的滑点方向写反（买单向下滑、卖单向上滑）'
+        '——成交价比真实更好，回测凭空赚钱。每一笔都多赚一个滑点，'
+        '换手越高偏差越大，而日终对账看不出异常（它只是"看起来更赚"）',
+        [
+            (
+                'tw/simexec.py',
+                '            px = o * (1.0 + slip) if req.side == "buy" else o * (1.0 - slip)\n',
+                '            px = o * (1.0 - slip) if req.side == "buy" else o * (1.0 + slip)\n',
+            ),
+        ],
+    ),
+    (
+        'M88',
+        '手续费不再走 ExecConfig（退回账户的 MarginConfig）'
+        '——`cost_multiplier` 于是**只影响滑点、完全不影响手续费**，'
+        '而配置看上去是同时控制两者的。症状：成本 ×5 后收益几乎没变，'
+        '看起来像"策略对成本不敏感"——一个漂亮且错误的结论。'
+        '这个 bug 真的存在过，是解析式与重跑版的数字对不上才查出来的',
+        [
+            (
+                'tw/simexec.py',
+                '        fee = self.config.fee(abs(float(req.sz) * float(px)), is_maker=is_maker)\n',
+                '        fee = None\n',
+            ),
+        ],
+    ),
+    (
+        'M89',
+        '逐根收益率漏掉第一根（`zip(eq[1:], eq[2:])`）'
+        '——夏普/波动率的样本少一个。收益总额看不出来（它用的是权益首尾），'
+        '所以只有夏普悄悄偏了一点。少了这个观测点等于**少记了一根的盈亏**，'
+        '而"共几根"这件事没有第二个地方会对账',
+        [
+            (
+                'tw/eval_agent.py',
+                '    for a, b in zip(equity, equity[1:]):\n',
+                '    for a, b in zip(equity[1:], equity[2:]):\n',
+            ),
+        ],
+    ),
+    (
+        'M90',
+        '与基线对照时**一律**走区间重叠检验（零方差基线也不例外）'
+        '——`noop` 的收益恒为 0 ⇒ 区间宽度为 0 ⇒ 重叠比例没有意义 ⇒ '
+        '输出「无法判定（输入退化）」。而"能不能打赢 noop"**恰恰是 A4 '
+        '最核心的那个问题**：用错检验会让最关键的问题答不出来，'
+        '而且看起来像"数据不够"',
+        [
+            (
+                'tw/eval_agent.py',
+                '        if width <= scale * 1e-9:\n',
+                '        if False:\n',
+            ),
+        ],
+    ),
+    (
+        'M91',
+        '成交率的分子用**全部成交**而不是"由订单产生的成交"'
+        '——TP/SL 是挂在仓位上的触发单，**没有对应的已提交订单**。'
+        '把它们算进分子会让比率**超过 100%**（真机报告里出现过 142%：'
+        '19 张订单 27 笔成交）。超过 100% 看起来只是"数字有点怪"，'
+        '很容易被放过，但它说明分子分母不同源，'
+        '而且这个错误会随 TP/SL 使用率线性放大',
+        [
+            (
+                'tw/eval_agent.py',
+                '    n_order_fills = sum(1 for f in fills if f.reason in _ORDER_FILL_REASONS)\n'
+                '    n_exit_fills = sum(1 for f in fills if f.reason in ("tp", "sl"))\n',
+                '    n_order_fills = len(fills)\n'
+                '    n_exit_fills = sum(1 for f in fills if f.reason in ("tp", "sl"))\n',
+            ),
+        ],
+    ),
+    (
+        'M92',
+        '回放覆盖率过低时仍把重跑结果当成本敏感性结论'
+        '——LLM 的 prompt 含账户状态（持仓/权益），而账户状态取决于成交、'
+        '成交取决于成本 ⇒ 换成本重放会让路径迅速发散。'
+        '实测成本 ×1 覆盖率 100%、×2 掉到 **0.8%**，于是 Agent 全程弃权、'
+        '交易从 27 笔变 2 笔，账面净收益从 −33 变 −444。'
+        '**那个 −444 看起来像成本敏感性结果，其实是回放失败**',
+        [
+            (
+                'tw/eval_agent.py',
+                '        if cov is not None and cov < min_coverage:\n',
+                '        if False:\n',
             ),
         ],
     ),

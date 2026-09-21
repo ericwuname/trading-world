@@ -1,5 +1,5 @@
 {
-  "next_available": 85,
+  "next_available": 93,
   "history": [
     {
       "ids": [],
@@ -100,6 +100,26 @@
       ],
       "claimed_by": "A3-LLM接入",
       "claimed_at": "2026-09-21T12:18:26"
+    },
+    {
+      "ids": [
+        85,
+        86,
+        87,
+        88,
+        89,
+        90
+      ],
+      "claimed_by": "A4-评估与执行",
+      "claimed_at": "2026-09-21T13:40:45"
+    },
+    {
+      "ids": [
+        91,
+        92
+      ],
+      "claimed_by": "A4-补充",
+      "claimed_at": "2026-09-21T13:59:04"
     }
   ],
   "note": "变异测试编号的权威来源。新增变异体前用 `python scripts/claim_mutation_ids.py --claim N --by <工作线>` 领取；next_available 的初值由 `--init` 从 mutation_check.py 实读推导，**不采用任何文档里预先写死的数字**。"

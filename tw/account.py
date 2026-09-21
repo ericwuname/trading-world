@@ -381,7 +381,8 @@ class MarginAccount:
         return self.equity(marks) <= self.maintenance_margin(marks)
 
     def liquidate(self, inst_id: str, marks: dict[str, float],
-                  pos_side: str = "net") -> dict:
+                  pos_side: str = "net",
+                  fee_override: float | None = None) -> dict:
         """强平一个仓位：按标记价平掉、扣手续费、记账。
 
         真实交易所的强平是**按破产价/标记价**成交并向保险基金结算；
@@ -389,6 +390,11 @@ class MarginAccount:
         差异在于真实市场里强平本身会造成滑点——本项目在 A1 里
         **不做这个假设**（否则就是"用假设创造收益"），
         由 A2/A4 的执行层按实际盘口去模拟。
+
+        ``fee_override`` 同 :meth:`apply_fill`：让成本敏感性实验
+        （``cost_multiplier``）也能作用到强平的手续费上。
+        ⚠️ 漏掉这一处会让"成本 ×5 后"偏乐观，而症状是
+        **只在发生强平的样本上才出现**——那种偏差最难发现。
         """
         p = self.position(inst_id, pos_side)
         if p.is_flat:
@@ -396,7 +402,9 @@ class MarginAccount:
         m = float(marks.get(inst_id, p.avg_px))
         qty = p.abs_qty
         side = "sell" if p.is_long else "buy"
-        fee = self.cfg.fee(p.notional(m), is_maker=False)
+        notional = p.notional(m)
+        fee = (float(fee_override) if fee_override is not None
+               else self.cfg.fee(notional, is_maker=False))
         pnl = p.apply_fill(side=side, qty=qty, price=m, fee=fee)
         self.cash += pnl
         self.total_fees += fee
@@ -424,6 +432,7 @@ class MarginAccount:
         is_maker: bool,
         pos_side: str = "net",
         lever: float = 1.0,
+        fee_override: float | None = None,
     ) -> dict:
         """把一笔成交记到账本上。**唯一的记账入口。**
 
@@ -435,9 +444,20 @@ class MarginAccount:
         开仓不动本金（本金作为保证金被占用），只有平仓才结算盈亏。
         若照抄现货的"扣 notional"，会发现开仓一手 BTC 就要求现金
         等于全额名义价值 —— 杠杆就完全不存在了。
+
+        ``fee_override`` 让调用方**显式指定**这一笔的手续费（而不是由
+        ``cfg`` 的费率算）。A4 的成本敏感性实验需要它：
+        ⚠️ 若没有这个参数，``ExecConfig.cost_multiplier`` 会**只影响滑点、
+        完全不影响手续费**——而配置看上去是同时控制两者的。
+        那种失效是静默的：成本 ×5 后收益几乎没变，看起来像
+        "策略对成本不敏感"（一个漂亮且错误的结论）。
+        这个坑是真实踩到的：解析式的成本敏感性与重跑版的数字对不上，
+        顺着差异查才发现费率根本没被用上。
         """
         p = self.position(inst_id, pos_side)
-        fee = self.cfg.fee(abs(float(qty) * float(price)), is_maker=is_maker)
+        notional = abs(float(qty) * float(price))
+        fee = (float(fee_override) if fee_override is not None
+               else self.cfg.fee(notional, is_maker=is_maker))
         pnl = p.apply_fill(side=side, qty=qty, price=price, fee=fee)
         self.cash += pnl
         self.total_fees += fee

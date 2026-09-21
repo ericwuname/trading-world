@@ -507,6 +507,27 @@ class TestRecorderAndReplay(unittest.TestCase):
                           strict=False)
         self.assertEqual(rp.coverage, 1.0)
 
+    def test_支持gz压缩的录制文件(self):
+        """⭐ 录制文件里每条都重复了整个 prompt（多采样时同一 prompt 出现
+        N 次），**压缩比约 4%**。不压缩的话归档一份 A4 证据就是 3.9MB——
+        而它恰恰是**花过钱、不可再生**的那个产物，该进仓库。"""
+        import gzip
+
+        with tempfile.TemporaryDirectory() as d:
+            raw = Path(d) / "r.jsonl"
+            t = _FakeTransport([("ok", _resp_obj("A")), ("ok", _resp_obj("B"))])
+            rec = Recorder(HTTPClient(config=AGNES, transport=t, api_key="k"), raw)
+            msgs = [{"role": "user", "content": "同一个问题"}]
+            rec.chat(msgs)
+            rec.chat(msgs)
+            gz = Path(d) / "r.jsonl.gz"
+            gz.write_bytes(gzip.compress(raw.read_bytes(), 6))
+
+            rp = ReplayClient(records_path=gz)
+            self.assertEqual(rp.n_prompts, 1)
+            self.assertEqual([rp.chat(msgs).text for _ in range(2)], ["A", "B"])
+            self.assertLess(gz.stat().st_size, raw.stat().st_size)
+
 
 # ======================================================================
 # 模板

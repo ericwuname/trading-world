@@ -46,14 +46,17 @@ from .decision_log import DecisionRecord, build_visible_state, state_digest
 from .llm import LLMClient, ReplayClient
 from .order_model import AlgoOrder, OrderRequest
 from .parse import consistency, majority_sample, parse_decision
+from .policy import validate_policy_output
 from .prompts import DEFAULT_TEMPLATE, build_messages
 from .risk import RiskLimits, check
 
-#: 决策模式。``live`` = 真的联网问；``replay_nonet`` = 只从录制里取。
+#: 决策模式。``live`` = 真的联网问；``replay_nonet`` = 只从录制里取；
+#: ``baseline_rule`` = 规则基线（**不问 LLM**）。
 #: ⚠️ 必须**显式记进留痕**："这次决策有没有可能读到外部信息"
 #: 是评估时第一个要回答的问题（设计文档 §4「回放模式默认关外部访问」）。
 MODE_LIVE = "live"
 MODE_REPLAY = "replay_nonet"
+MODE_BASELINE = "baseline_rule"
 
 
 # ======================================================================
@@ -174,9 +177,25 @@ class TradingAgent:
     被在两个不同时间点跑出同样的结果**。
     """
 
-    client: LLMClient
+    client: LLMClient | None = None
     config: AgentConfig = field(default_factory=AgentConfig)
     limits: RiskLimits = field(default_factory=RiskLimits)
+    #: ⭐ **规则基线模式**（A4）：给了它就不问 LLM——
+    #: 跳过 ②prompt ③采样 ④解析 三步，直接从可见状态算出一个意图，
+    #: 而 ⑤风控 ⑥订单 与留痕**完全走同一条路**。
+    #:
+    #: 这是"同信息基线"能成立的关键：如果基线走的是另一条管线，
+    #: 「LLM 赢了基线」就可能只是「两条管线的差异」，不是模型的贡献。
+    policy: Any = None
+
+    def __post_init__(self) -> None:
+        if self.client is None and self.policy is None:
+            raise ValueError("必须给 client（LLM）或 policy（规则基线）之一")
+        if self.client is not None and self.policy is not None:
+            # ⚠️ 两个都给会让"这次是谁决定的"变得不确定——
+            # 而留痕里 mode 只有一个字段，无法表达"混合"。
+            # 宁可报错，不要一个说不清的 mode。
+            raise ValueError("client 与 policy 只能给一个（否则 mode 无法表达）")
 
     # -- 内部：一次采样 -------------------------------------------------
     def _sample(self, messages: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]], int]:
@@ -235,58 +254,74 @@ class TradingAgent:
             )
         mid = float(mid)
 
-        # ---- 建议最大量（给模型一个"合规的天花板"）--------------------
+        # ---- 建议最大量（给模型"合规的天花板"；基线也用同一个）--------
         max_size = self._suggest_max_size(mid=mid, equity=equity)
-
-        # ---- ② 构造 prompt -------------------------------------------
-        messages = build_messages(
-            visible,
-            inst_id=cfg.inst_id,
-            bar=cfg.bar,
-            tick=tick,
-            template=cfg.template,
-            limits=self.limits,
-            position=position,
-            max_size=max_size,
-            n_closes=cfg.n_closes,
-        )
         context_hash = state_digest(visible)
 
-        # ---- ③ 采样 ---------------------------------------------------
-        raws, parsed_list, latency_ms = self._sample(messages)
-
-        # ---- ④ 解析：取"多数派"或"第一条" -----------------------------
-        # ⚠️ ``parse_ok`` 的判据是「**有没有任何一次采样解析成功**」，
-        # 而且必须**看采样列表，不能看最终 ``parsed``**。
-        # 两个坑（都真实踩到过）：
-        #
-        #   坑 1：只看 ``parsed_list[0]`` ⇒ 第 1 次失败、后 2 次成功时
-        #         被记成失败，而且 ``parse_error`` 是空串
-        #         （一条"失败但没说为什么"的记录）。
-        #   坑 2：看最终 ``parsed`` 里的 action ⇒ ``majority_sample``
-        #         在全部失败时会**造一条 hold 兜底**，那条兜底的
-        #         action 也是 "hold"，于是"全失败"被读成"解析成功"。
-        #         造一个看起来合法的兜底值，正是本项目最警惕的
-        #         "把故障伪装成正常"的形态。
-        n_ok = sum(1 for p in parsed_list if p.get("action"))
-        vote = consistency(parsed_list)
-        if n_ok == 0:
-            # 全失败 ⇒ ``parsed`` 必须保持**空**。
-            # 不能把 ``majority_sample`` 造的兜底 hold 写进去：
-            # 那会让"这条记录有没有意图"这个判断依赖别的字段，
-            # 而空 dict 才是诚实的状态（模型什么都没给出来）。
-            parsed: dict[str, Any] = {}
-            parse_error = f"{len(parsed_list)} 次采样全部解析失败（原文见 llm_raw）"
-        elif cfg.n_samples > 1:
-            parsed = majority_sample(parsed_list)
-            parse_error = ("" if n_ok == len(parsed_list) else
-                           f"部分采样解析失败：{len(parsed_list)} 次中 "
-                           f"{len(parsed_list) - n_ok} 次无有效结果"
-                           f"（本次用的是成功那些的多数派）")
-        else:
-            parsed = dict(parsed_list[0])
+        # ---- 分支 A：规则基线（跳过 prompt / 采样 / 解析）--------------
+        if self.policy is not None:
+            probe = self.policy.decide(visible, max_size=max_size)
+            validate_policy_output(probe)
+            parsed = dict(probe)
+            parsed_list = [parsed]
+            raws = ["（规则基线：无 LLM 调用）"]
+            latency_ms = 0
+            n_ok = 1
+            vote = consistency(parsed_list)
+            parse_ok = True
             parse_error = ""
-        parse_ok = n_ok > 0
+            messages = []
+        else:
+            # ---- ② 构造 prompt ---------------------------------------
+            messages = build_messages(
+                visible,
+                inst_id=cfg.inst_id,
+                bar=cfg.bar,
+                tick=tick,
+                template=cfg.template,
+                limits=self.limits,
+                position=position,
+                max_size=max_size,
+                n_closes=cfg.n_closes,
+            )
+            # ---- ③ 采样 ---------------------------------------------
+            raws, parsed_list, latency_ms = self._sample(messages)
+            # ---- ④ 解析：取"多数派"或"第一条" -----------------------
+            # ⚠️ ``parse_ok`` 的判据是「**有没有任何一次采样解析成功**」，
+            # 而且必须**看采样列表，不能看最终 ``parsed``**。
+            # 两个坑（都真实踩到过）：
+            #
+            #   坑 1：只看 ``parsed_list[0]`` ⇒ 第 1 次失败、后 2 次成功时
+            #         被记成失败，而且 ``parse_error`` 是空串
+            #         （一条"失败但没说为什么"的记录）。
+            #   坑 2：看最终 ``parsed`` 里的 action ⇒ ``majority_sample``
+            #         在全部失败时会**造一条 hold 兜底**，那条兜底的
+            #         action 也是 "hold"，于是"全失败"被读成"解析成功"。
+            #         造一个看起来合法的兜底值，正是本项目最警惕的
+            #         "把故障伪装成正常"的形态。
+            n_ok = sum(1 for p in parsed_list if p.get("action"))
+            vote = consistency(parsed_list)
+            if n_ok == 0:
+                # 全失败 ⇒ ``parsed`` 必须保持**空**。
+                # 不能把 ``majority_sample`` 造的兜底 hold 写进去：
+                # 那会让"这条记录有没有意图"这个判断依赖别的字段，
+                # 而空 dict 才是诚实的状态（模型什么都没给出来）。
+                parsed = {}
+                parse_error = (f"{len(parsed_list)} 次采样全部解析失败"
+                               f"（原文见 llm_raw）")
+            elif cfg.n_samples > 1:
+                parsed = majority_sample(parsed_list)
+                parse_error = ("" if n_ok == len(parsed_list) else
+                               f"部分采样解析失败：{len(parsed_list)} 次中 "
+                               f"{len(parsed_list) - n_ok} 次无有效结果"
+                               f"（本次用的是成功那些的多数派）")
+            else:
+                parsed = dict(parsed_list[0])
+                parse_error = ""
+            parse_ok = n_ok > 0
+        # ⚠️ 规则基线的 ``parse_ok`` 恒为 True 且 ``llm_raw`` 写明
+        # "无 LLM 调用"——**不能留空**。留空会让"这条记录的模型输出
+        # 去哪了"变成一个问题，而答案其实是"根本没有模型"。
 
         # ---- ⑤ 风控 ---------------------------------------------------
         requested = dict(parsed)          # 风控**之前**的意图，必须保留
@@ -338,7 +373,21 @@ class TradingAgent:
                 executed = False
 
         # ---- 写记录 ---------------------------------------------------
-        mode = MODE_REPLAY if isinstance(self.client, ReplayClient) else MODE_LIVE
+        if self.policy is not None:
+            mode = MODE_BASELINE
+            prompt_label = f"rule:{getattr(self.policy, 'name', 'policy')}"
+            model_name = ""
+            n_samples_eff = 1
+        else:
+            mode = (MODE_REPLAY if isinstance(self.client, ReplayClient)
+                    else MODE_LIVE)
+            prompt_label = cfg.template
+            # 模型名从**客户端配置**现取，不在配置里存第二份——
+            # 两处存同一个东西，迟早会不一致，而留痕里"到底用了哪个模型"
+            # 正是 A/B 归因的依据。
+            model_name = str(getattr(getattr(self.client, "config", None),
+                                     "model", "") or "")
+            n_samples_eff = cfg.n_samples
         rec = DecisionRecord(
             run_id=run_id,
             tick=int(tick),
@@ -347,20 +396,21 @@ class TradingAgent:
             context_hash=context_hash,
             visible_state=dict(visible),
             data_snapshot=data_snapshot,
-            prompt_template=cfg.template,
-            # 模型名从**客户端配置**现取，不在配置里存第二份——
-            # 两处存同一个东西，迟早会不一致，而留痕里"到底用了哪个模型"
-            # 正是 A/B 归因的依据。
-            model=str(getattr(self.client.config, "model", "") or ""),
+            # ⚠️ 规则基线把"用了哪条规则"写进 prompt_template 这个字段：
+            # 它是 `decision_id` 的组成部分，所以换了规则就会换 ID——
+            # 这正是我们要的（不同规则是不同的实验）。
+            prompt_template=prompt_label,
+            model=model_name,
             model_params={"temperature": cfg.temperature,
                           "max_tokens": cfg.max_tokens,
-                          "n_samples": cfg.n_samples},
+                          "n_samples": n_samples_eff},
             tool_calls=[],
             # ⚠️ 非空即表示"可能有外部信息进来"；回放模式下必须为空
             retrieved=[],
             mode=mode,
-            llm_raw="\n--- sample ---\n".join(raws) if len(raws) > 1 else (raws[0] if raws else ""),
-            n_samples=cfg.n_samples,
+            llm_raw=("\n--- sample ---\n".join(raws) if len(raws) > 1
+                     else (raws[0] if raws else "")),
+            n_samples=n_samples_eff,
             samples=[{"parsed": p, "_ok": bool(p)} for p in parsed_list],
             parsed=dict(parsed),
             parse_ok=bool(parse_ok),

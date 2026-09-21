@@ -27,9 +27,13 @@ llm.py         **A3** LLM 通道：真机 / 回放 / 脚本化三种实现，缺
 prompts.py     **A3** 版本化 prompt 模板（改模板必须加版本，否则归因失效）
 parse.py       **A3** 容错解析：只翻译不修正；解析失败也留痕
 agent.py       **A3** 决策回路：可见状态 → prompt → LLM → 解析 → 风控 → 订单意图
+simexec.py     **A4** 逐根 K 线执行模拟（bar 级成交的四个假设**全部显式声明**）
+policy.py      **A4** 同信息规则基线（noop / momentum / meanrevert / random_taker）
+agent_run.py   **A4** 完整回路：Agent + 风控 + 执行 + 账本，账户状态回流到下次决策
+eval_agent.py  **A4** 分层评估：决策层 / 执行层 / 结果层 + 成本敏感性 + 区间重叠检验
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .account import MarginAccount, MarginConfig, Position
 from .agent import (
@@ -39,11 +43,26 @@ from .agent import (
     run_session,
     visible_from_series,
 )
+from .agent_run import RunResult, order_request_from_record, run_agent_session
 from .book import OrderBook
 from .config import Population, SimConfig
 from .decision_log import DecisionLog, DecisionRecord, build_visible_state, log_stats
 from .engine import MatchingEngine
 from .eval import evaluate, format_table, markout, mid_series, pnl_breakdown
+from .eval_agent import (
+    block_bootstrap_ci,
+    compare_to_baselines,
+    confidence_calibration,
+    cost_sensitivity_analytic,
+    cost_sensitivity_rerun,
+    decision_layer,
+    evaluate_run,
+    execution_layer,
+    format_report_lines,
+    max_drawdown,
+    result_layer,
+    sharpe,
+)
 from .llm import (
     HTTPClient,
     LLMClient,
@@ -70,9 +89,20 @@ from .parse import (
     majority_sample,
     parse_decision,
 )
+from .policy import (
+    AlwaysHold,
+    MeanRevert,
+    Momentum,
+    Policy,
+    RandomTaker,
+    list_policies,
+    make_policy,
+    validate_policy_output,
+)
 from .prompts import DEFAULT_TEMPLATE, TEMPLATES, build_messages
 from .risk import RiskDecision, RiskLimits, check, is_decision_bar
 from .scenarios import SCENARIOS, Scenario, get_scenario, list_scenarios
+from .simexec import BarExecutor, ExecConfig, Fill, bars_from_series
 from .strategy import Strategy, StrategyContext, make_strategy
 from .types import (
     BookSnapshot,
@@ -150,5 +180,33 @@ __all__ = [
     "SessionResult",
     "run_session",
     "visible_from_series",
+    # A4：执行模拟 + 规则基线 + 完整回路 + 分层评估
+    "ExecConfig",
+    "Fill",
+    "BarExecutor",
+    "bars_from_series",
+    "Policy",
+    "AlwaysHold",
+    "Momentum",
+    "MeanRevert",
+    "RandomTaker",
+    "make_policy",
+    "list_policies",
+    "validate_policy_output",
+    "RunResult",
+    "run_agent_session",
+    "order_request_from_record",
+    "decision_layer",
+    "execution_layer",
+    "result_layer",
+    "confidence_calibration",
+    "cost_sensitivity_analytic",
+    "cost_sensitivity_rerun",
+    "compare_to_baselines",
+    "evaluate_run",
+    "format_report_lines",
+    "block_bootstrap_ci",
+    "max_drawdown",
+    "sharpe",
     "__version__",
 ]

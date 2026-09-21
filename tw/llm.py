@@ -63,6 +63,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -494,7 +495,13 @@ class ReplayClient:
     def __post_init__(self) -> None:
         self.records_path = Path(self.records_path)
         if self.records_path.exists():
-            with open(self.records_path, "r", encoding="utf-8") as fh:
+            # ⚠️ 支持 ``.jsonl.gz``：录制文件里每条都重复了整个 prompt
+            # （多采样时同一 prompt 出现 N 次），**压缩比约 4%**——
+            # 不压缩的话归档一份 A4 证据就是 3.9MB。
+            # 而它是**花过钱、不可再生**的那个产物，该进仓库。
+            opener = (gzip.open if self.records_path.suffix == ".gz"
+                      else open)
+            with opener(self.records_path, "rt", encoding="utf-8") as fh:
                 for line in fh:
                     s = line.strip()
                     if not s:
