@@ -310,8 +310,16 @@ class TestPower(unittest.TestCase):
         a = min_detectable_effect(0.01, 4)
         b = min_detectable_effect(0.01, 100)
         self.assertGreater(a, b)
-        # 4 倍段数 ⇒ 效应减半（√ 关系）
-        self.assertAlmostEqual(a / b, math.sqrt(100 / 4), places=6)
+        # ⚠️ **这条断言改过一次，值得记下来。**
+        # 旧版写的是"4 倍段数 ⇒ 效应减半（√ 关系）"，即 `a/b == 5`。
+        # 它当时成立**只因为** `min_detectable_effect` 把临界值写成了
+        # 常数 1.96+0.84（于是两个 n 的 z 一样，比值只剩 √n）。
+        # 改成 df 相关的 `t_crit95(n−1)` 后，**小样本那一端的临界值更大**
+        # （df=3 时 3.18，df=99 时 1.98）⇒ 比值变成 **7.11 > 5**。
+        # ⇒ 正确的表述是：**"加段数"的收益比 √n 更大**，
+        #    因为同时还在买"临界值变小"这件事。
+        self.assertGreater(a / b, math.sqrt(100 / 4))
+        self.assertAlmostEqual(a / b, 7.112, places=2)
 
     def test_段数不足返回nan(self):
         self.assertTrue(math.isnan(min_detectable_effect(0.01, 1)))

@@ -275,6 +275,64 @@ _USER_V4 = """## 你能看到什么（这是你的全部信息）
 请给出你在 **tick {tick}** 的决策。**别忘了填 `basis`**。只输出 JSON。"""
 
 
+# ======================================================================
+# v5 用户提示 —— ⭐ v4 + **KPI 段**（单一变量：有没有目标与约束）
+# ======================================================================
+_USER_V5 = """## 你能看到什么（这是你的全部信息）
+
+以下数据全部来自 tick ≤ {tick} 的市场。**没有**未来数据。
+
+### 市场
+- 标的：{inst_id}（{bar} K 线）　当前 tick：{tick}
+- 中间价 mid：{mid}　标记价 mark：{mark}
+
+## ⭐ 你的考核目标（本窗口）
+
+{kpi_txt}
+
+## 你有两种决策方式，**由你自己选**（也可以结合）
+
+### 方式 A：照**已算好的指标**执行
+{features_txt}
+
+### 方式 B：凭**自己对原始价格**的判断
+- 最近 {n_closes} 根收盘价（旧 → 新）：
+{recent_closes_txt}
+
+### 怎么选
+两种方式**都可以**。如果你认为指标够用 → 用 A（`basis`: `rule`）；
+想结合 → 用 A+B（`basis`: `both`）；想自己判断 → 用 B（`basis`: `judgment`）。
+
+### 本次数据源**不提供**的信息
+{unavailable_txt}
+
+### 你的账户
+- 持仓：{position_txt}
+- 现金 cash：{cash}　权益 equity：{equity}
+- 保证金率 margin_ratio：{margin_ratio_txt}
+- 可用杠杆上限：{max_lever}x　建议最大量：{max_size} 张
+
+### 风控约束
+- 止盈止损相对 mid 的偏离不得超过 {max_tp_sl_pct_txt}
+- 单标的敞口上限：{max_inst_exposure_txt} 权益　单笔名义价值上限：{max_notional}
+
+请给出你在 **tick {tick}** 的决策。**别忘了填 `basis`**。只输出 JSON。"""
+
+
+#: v6 相对 v4 插入的那一段 —— **它是 v6 相对 v4 的唯一变量**。
+_KPI_SECTION = "## ⭐ 你的考核目标（本窗口）\n\n{kpi_txt}\n\n"
+#: 插入锚点。**必须与 `_USER_V4` 里那一行逐字相同**，否则 replace 静默不生效。
+_V6_ANCHOR = "## 你有两种决策方式，**由你自己选**（也可以结合）"
+_USER_V6 = _USER_V4.replace(_V6_ANCHOR, _KPI_SECTION + _V6_ANCHOR, 1)
+# ⚠️ **不能省这两个断言**：锚点失效时 `str.replace` 会**静默返回原串**，
+# 于是 v6 变成 v4、"单一变量"凭空消失，而对照实验照跑照出数字
+# —— 正是本项目最怕的一类静默失败（"参数对了但什么都没发生"）。
+assert _USER_V6 != _USER_V4, (
+    "v6 的考核目标段没插进去（锚点 _V6_ANCHOR 与 _USER_V4 对不上了）")
+assert _USER_V6.replace(_KPI_SECTION, "", 1) == _USER_V4, (
+    "v6 与 v4 的差别不是「只多了一段」——单一变量对照被破坏")
+
+
 TEMPLATES: dict[str, dict[str, str]] = {
     "v1": {"system": _SYSTEM_V1, "user": _USER_V1},
     # ------------------------------------------------------------------
@@ -334,6 +392,39 @@ TEMPLATES: dict[str, dict[str, str]] = {
     #   所以报告里必须配合"两类行为的实际差异"一起看。
     # ------------------------------------------------------------------
     "v4": {"system": _SYSTEM_V4, "user": _USER_V4},
+    # ------------------------------------------------------------------
+    # v5：⭐ v4 + **KPI 段**（2026-09-21 用户第五轮提的问题）
+    #
+    # 用户原话：
+    #   「是否要给 LLM 设计一个 KPI，看看是否会有什么不同，
+    #     还有不能因为达成 KPI 就不继续，亏损扩大就不交易，
+    #     要平稳交易下去才行。」
+    #
+    # ⚠️⚠️ **上面这句「只有一个变量」是错的，2026-09-21 实测发现并改正。**
+    # 逐行 diff `_USER_V5` 与 `_USER_V4` 后发现 v5 其实改了**两处**：
+    #   ① 插入「考核目标」段；
+    #   ② **顺手重写了「怎么选」那段指令**（并删掉了
+    #      「这些指标由确定性代码从下面的收盘价算出…」这一行）。
+    # ⇒ v4 → v5 是**两处改动**，"KPI 有没有用"这个对照**不干净**：
+    #   入场率从 45.8% 跳到 85.0% 里，有一部分来自指令改写，不是 KPI。
+    # ⇒ 处置（按本项目纪律「改模板要新增版本而不是原地改」）：
+    #   **保留 v5 原样**（它已被录制过，改动会让回放与历史结论全部失效），
+    #   另加 **v6 = v4 + 考核目标段**，机械保证"只有这一个变量"。
+    # ------------------------------------------------------------------
+    "v5": {"system": _SYSTEM_V4, "user": _USER_V5},
+    # ------------------------------------------------------------------
+    # v6：⭐ **严格的单一变量对照** = v4 + 考核目标段（2026-09-21 新增）
+    #
+    # 为什么必须新开一版而不是修 v5：见上面 v5 的注释。
+    # ⭐ 本版的关键不是文本本身，而是**它是被机械构造出来的**：
+    #   `_USER_V6` 由 `_USER_V4` 在**唯一锚点**处插入 `_KPI_SECTION` 得到，
+    #   并用 `assert` 保证"插入真的发生了"。
+    #   ⇒ "只有这一个变量"从一句承诺变成一个**可验证的等式**：
+    #     去掉那一段，`_USER_V6` 与 `_USER_V4` **逐字节相等**（有测试守住）。
+    # ⚠️ 若锚点被改过，`str.replace` 会**静默返回原串** ⇒ v6 退化成 v4
+    #   （"单一变量"凭空消失），而实验照跑照出数字 —— 所以那个 assert 不能省。
+    # ------------------------------------------------------------------
+    "v6": {"system": _SYSTEM_V4, "user": _USER_V6},
 }
 
 
@@ -444,6 +535,47 @@ def market_features(recent_closes: list[float]) -> dict[str, float]:
     }
 
 
+def _kpi_text(kpi: Any, st: Any) -> str:
+    """把 KPI 目标与**当前进度**排成人话。
+
+    ⚠️ 三条刻意写法（见 v5 的注册注释）：
+    1. 只写收益目标 = 会被刷成"达标就停"或"亏了就装死" ⇒ 必须同时给
+       在场率下限与回撤上限；
+    2. 必须给**当前进度**（落后多少、还剩多少根），否则它无法判断该不该冒进；
+    3. 要把"**不达标也不等于要冒险**"说出来——否则"目标"会变成"赌"的借口。
+    """
+    if kpi is None or st is None:
+        return "（本窗口未设置考核目标——请按你对风险与机会的判断自行决策。）"
+    g = st.gaps(kpi) if hasattr(st, "gaps") else {}
+    lines = [
+        f"- **净收益目标**：≥ {kpi.target_return:+.2%}（当前 "
+        f"{st.return_so_far:+.3%}）",
+        f"- **在场率下限**：≥ {kpi.min_presence:.0%} 的 K 线不能空仓"
+        f"（当前 {st.presence_so_far:.1%}）—— ⚠️ 靠不交易来避免亏损**不算达标**",
+        f"- **最大回撤上限**：≤ {kpi.max_drawdown:.2%}"
+        f"（当前 {st.drawdown_so_far:.2%}）—— ⚠️ 靠加大仓位去追目标**不算达标**",
+        f"- **换手区间**：{kpi.turnover_lo:.2f}× ~ {kpi.turnover_hi:.2f}× 权益"
+        f"（当前 {st.turnover_x:.2f}×）",
+        "",
+        f"进度：第 {st.bars_done}/{st.bars_total} 根，还剩 **{st.bars_left}** 根。",
+    ]
+    if g:
+        if g.get("behind_target"):
+            lines.append(f"收益还差 **{g['return_gap']:+.2%}**。")
+        if g.get("too_flat"):
+            lines.append(f"⚠️ 在场率低于下限 {g['presence_gap']:.1%}"
+                         f"——继续空仓会**不达标**。")
+        if g.get("near_dd_limit"):
+            lines.append("⚠️ 回撤已接近上限，**再加风险会不达标**。")
+    lines += [
+        "",
+        "⚠️ **重要**：以上是「持续要求」，不是「及格线」。",
+        "达到收益目标后**仍要继续平稳交易**（在场率与换手仍要满足）；",
+        "落后目标时**也不要靠加大仓位或方向性豪赌去追**——回撤上限同样是硬约束。",
+    ]
+    return "\n".join(lines)
+
+
 def _features_text(feats: dict[str, float]) -> str:
     """把特征排成人读的几行。
 
@@ -480,6 +612,8 @@ def build_messages(
     position: dict[str, Any] | None = None,
     max_size: float = 0.0,
     n_closes: int = 12,
+    kpi: Any = None,
+    kpi_state: Any = None,
 ) -> list[dict[str, Any]]:
     """把 ``visible_state`` 变成 ``messages``。
 
@@ -525,6 +659,9 @@ def build_messages(
         # **不额外取数据**。否则留痕里的 visible_state 就不再是
         # "模型看到的全部"，回放会变成重演一个信息更少的场景。
         features_txt=_features_text(market_features(rc)),
+        # ⚠️ KPI 段只对 v5 有占位符；v1~v4 的模板没有 {kpi_txt}，
+        # 多传一个 kwarg 给 ``str.format`` 是安全的（未被引用的会被忽略）。
+        kpi_txt=_kpi_text(kpi, kpi_state),
         n_closes=len(rc),
         recent_closes_txt=("、".join(_fmt(x, 2) for x in rc) if rc else "（无）"),
         position_txt=_position_text(position),

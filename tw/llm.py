@@ -67,6 +67,7 @@ import gzip
 import hashlib
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -568,6 +569,11 @@ class Recorder:
 
     ⚠️ **记录里不放密钥**：只放 ``prompt_hash`` / messages / 响应正文与
     配置描述。密钥在那个 Bearer 头里，不进这里。
+
+    ⚠️ **写入要加锁**：多段实验是按段并行的（段之间独立 ⇒ 并行是安全的），
+    但**录制文件是共享的** ⇒ 并发 append 会让两行交错成一行，
+    而那会让整个留痕文件解析失败（`DecisionLog` 对坏行是**报错**而不是跳过
+    ——这是有意的，但在这里会表现为"回放全崩"）。
     """
 
     def __init__(self, inner: LLMClient, path: str | Path) -> None:
@@ -575,6 +581,7 @@ class Recorder:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.n = 0
+        self._lock = threading.Lock()
 
     @property
     def config(self) -> LLMConfig:
@@ -583,20 +590,23 @@ class Recorder:
     def chat(self, messages: list[dict[str, Any]],
              **overrides: Any) -> LLMResponse:
         resp = self.inner.chat(messages, **overrides)
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "prompt_hash": resp.prompt_hash,
-                "messages": messages,
-                "model": getattr(self.inner.config, "model", ""),
-                "temperature": getattr(self.inner.config, "temperature", None),
-                "ok": resp.ok,
-                "text": resp.text,
-                "error": resp.error,
-                "latency_ms": resp.latency_ms,
-                "attempts": resp.attempts,
-                "usage": resp.usage,
-            }, ensure_ascii=False) + "\n")
-        self.n += 1
+        line = json.dumps({
+            "prompt_hash": resp.prompt_hash,
+            "messages": messages,
+            "model": getattr(self.inner.config, "model", ""),
+            "temperature": getattr(self.inner.config, "temperature", None),
+            "ok": resp.ok,
+            "text": resp.text,
+            "error": resp.error,
+            "latency_ms": resp.latency_ms,
+            "attempts": resp.attempts,
+            "usage": resp.usage,
+        }, ensure_ascii=False)
+        # ⚠️ 一条记录 = 一次 write，且整条在同一锁内 ⇒ 不会交错
+        with self._lock:
+            with open(self.path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            self.n += 1
         return resp
 
 

@@ -32,9 +32,12 @@ policy.py      **A4** 同信息规则基线（noop / momentum / meanrevert / ran
 agent_run.py   **A4** 完整回路：Agent + 风控 + 执行 + 账本，账户状态回流到下次决策
 eval_agent.py  **A4** 分层评估：决策层 / 执行层 / 结果层 + 成本敏感性 + 区间重叠检验
 segmented.py   **A6** 多段独立运行 + 同段配对检验（换掉判不出来的"每根均值"）
+outcome.py     **A6** 结果回填（证据链第 ⑥ 项；只写 outcome，不碰可见状态）
+kpi.py         **A6** KPI：多目标互相咬住（在场率下限 + 回撤上限 + 换手区间）
+reflect.py     **A6** 复盘归因（含 lucky/unlucky）+ 经验库（按 t' < t 检索）
 """
 
-__version__ = "0.6.0"
+__version__ = "0.8.0"
 
 from .account import MarginAccount, MarginConfig, Position
 from .agent import (
@@ -82,6 +85,12 @@ from .order_model import (
     OrderRequest,
     apply_reduce_only,
     precheck,
+)
+from .outcome import (
+    BackfillConfig,
+    backfill,
+    backfill_one,
+    outcome_summary,
 )
 from .parse import (
     ParseResult,
@@ -228,5 +237,10 @@ __all__ = [
     "power_analysis",
     "min_detectable_effect",
     "sensitivity_check",
+    # A6：结果回填（证据链第 ⑥ 项，复盘的地基）
+    "BackfillConfig",
+    "backfill",
+    "backfill_one",
+    "outcome_summary",
     "__version__",
 ]

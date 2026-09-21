@@ -141,12 +141,21 @@ def run_paired_segments(
     max_segs: int = 0,
     keep_runs: bool = False,
     progress: Callable[[int, int], None] | None = None,
+    parallel: int = 1,
 ) -> SegmentedRuns:
     """在每一段上把**所有配置各跑一次**，得到配对的观测。
 
     ⚠️ **每个配置每段都要新建 agent 与账户**（见 :data:`AgentFactory`）：
     复用同一个账户会让前一段的持仓带进下一段 ⇒ 段不独立，
     而"段独立"正是这个度量效能高的**唯一来源**。
+    ⚠️ **两层都要守**：既不能跨段共用，也不能**同段内跨配置共用**
+    （后者会让 B 的成绩里混进 A 的盈亏，配对就配错了）。
+
+    ``parallel`` > 1 时**按段并行**（段之间本来就独立）。
+    ⚠️ 并行**不改变结果**：每段的账户与决策只依赖它自己的区间，
+    唯一的共享物是 LLM 客户端（无状态调用）。
+    ⇒ 但 ``progress`` 的回调顺序会变（并行下完成顺序不定），
+    所以回调只用来报"跑了几格"，**不要**假设它递增有序。
     """
     cfg_exec = exec_config or ExecConfig()
     ranges = segment_ranges(len(getattr(series, "close", [])), seg_len,
@@ -159,12 +168,14 @@ def run_paired_segments(
             f"seg_len={seg_len}，min_history={min_history}"
         )
 
-    out = SegmentedRuns(seg_len=seg_len)
-    n_cfg = len(factories)
-    for k, (s, e) in enumerate(ranges):
+    def _one_segment(k: int, rng: tuple[int, int]
+                     ) -> tuple[tuple[int, int], dict[str, float],
+                                dict[str, RunResult]]:
+        s, e = rng
         per_net: dict[str, float] = {}
         per_run: dict[str, RunResult] = {}
         for name, mk in factories.items():
+            # ⚠️ 每个 (段, 配置) 一个**新账户** —— 两层都不能共用
             acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())
             res = run_agent_session(
                 mk(), series, account=acc, start=s, end=e, name=name,
@@ -174,9 +185,37 @@ def run_paired_segments(
             per_net[name] = (res.final_equity - base) / base
             if keep_runs:
                 per_run[name] = res
+        return rng, per_net, per_run
+
+    total = len(ranges) * len(factories)
+    done = 0
+    results: list[tuple[tuple[int, int], dict[str, float],
+                        dict[str, RunResult]]] = []
+    if parallel > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=int(parallel)) as ex:
+            futs = [ex.submit(_one_segment, k, r)
+                    for k, r in enumerate(ranges)]
+            for fu in as_completed(futs):
+                res = fu.result()
+                results.append(res)
+                done += len(factories)
+                if progress is not None:
+                    progress(done, total)
+        # ⚠️ 并行完成顺序不定 ⇒ **按段起点排序**，保证结果与串行一致
+        results.sort(key=lambda t: t[0])
+    else:
+        for k, r in enumerate(ranges):
+            res = _one_segment(k, r)
+            results.append(res)
+            done += len(factories)
             if progress is not None:
-                progress(k * n_cfg + len(per_net), len(ranges) * n_cfg)
-        out.ranges.append((s, e))
+                progress(done, total)
+
+    out = SegmentedRuns(seg_len=seg_len)
+    for rng, per_net, per_run in results:
+        out.ranges.append(rng)
         out.net.append(per_net)
         if keep_runs:
             out.runs.append(per_run)
@@ -216,22 +255,48 @@ def segment_correlation(net: list[dict[str, float]], cfg: str) -> float:
     return num / (da * db) if da > 0 and db > 0 else float("nan")
 
 
-def _t_crit(df: int, alpha: float = 0.05) -> float:
-    """双侧 t 临界值（小表，够用即可；df>30 用 1.96 近似）。
+#: 双侧 t 临界值查表（**本模块唯一的表**）。
+#: ⚠️ 这里曾经有**两份**实现（`_t_crit` 与 `t_crit95`），而它们立刻就分叉了：
+#: `_t_crit` 在 `df > 30` 时直接返回 1.96（真值在 df=47 时约 **2.012**）
+#: ⇒ 区间略窄 ⇒ **偏"显著"**；`t_crit95` 则做了插值。
+#: ⇒ 统一成一份。本项目的元教训：**同一个量有多份实现，就一定会分叉。**
+_T_TABLE = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447,
+    7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179,
+    13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101,
+    19: 2.093, 20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064,
+    25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
+    40: 2.021, 60: 2.000, 120: 1.980, 10 ** 6: 1.960,
+}
 
-    ⚠️ 不引 scipy：本项目「零第三方依赖」的约定，而且这里只需要
-    df ≤ 30 的精确值与更大 df 的近似。
+
+def _t_crit(df: int, alpha: float = 0.05) -> float:
+    """双侧 t 临界值（查表 + 线性插值；**不引 scipy**）。
+
+    ⚠️ 大 df 用的是**插值**而不是"一律 1.96"：后者在 df=31~60 区间
+    会把临界值低估约 2~3%（df=47 真值 ≈ 2.012，写成 1.96 偏小 2.6%）
+    ⇒ 置信区间偏窄 ⇒ **偏"显著"**。对一份要用来下结论的工具，
+    这个方向上的偏差不能接受。
     """
-    table = {
-        1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447,
-        7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179,
-        13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101,
-        19: 2.093, 20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064,
-        25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
-    }
-    if df <= 0:
+    d = int(df)
+    if d <= 0:
         return float("inf")
-    return table.get(df, 1.96 if alpha == 0.05 else 2.58)
+    keys = sorted(_T_TABLE)
+    if d >= keys[-1]:
+        base = 1.960
+    elif d in _T_TABLE:
+        base = _T_TABLE[d]
+    else:
+        lo = max(k for k in keys if k < d)
+        hi = min(k for k in keys if k > d)
+        v0, v1 = _T_TABLE[lo], _T_TABLE[hi]
+        base = v0 + (v1 - v0) * (d - lo) / (hi - lo)
+    if alpha == 0.05:
+        return base
+    if alpha == 0.01:
+        # 99% 双侧：与 95% 表同形，按比例放大（df→∞ 时 2.576/1.960）
+        return base * (2.576 / 1.960) if d >= 30 else base * 1.35
+    return base
 
 
 def paired_verdict(diffs: list[float], *,
@@ -301,28 +366,72 @@ def paired_verdict(diffs: list[float], *,
 # ======================================================================
 # 功效分析（先估再定段长）
 # ======================================================================
+def t_crit95(df: int) -> float:
+    """双侧 95% 的 t 临界值 —— :func:`_t_crit` 的**公开别名**。
+
+    ⚠️ 它只是一个别名，**不是第二份实现**。本项目曾经同时存在
+    `_t_crit`（大 df 直接给 1.96）与 `t_crit95`（大 df 插值）两份表，
+    而它们立刻就分叉了；更早还有第三份写在 `scripts/a6_power.py` 里
+    （只含 t 临界值、不含功效项）⇒ 让"需要多少段"与"MDE 是多少"
+    **不互为逆运算**。
+    ⇒ **这个量在本仓库里只允许有一份实现。**
+    """
+    return _t_crit(df, 0.05)
+
+
+#: 80% 功效对应的正态分位（`z_{1-β}`）。**必须与 `t_crit95` 相加**才是
+#: "MDE / 所需样本量"口径里的总宽度——只用一个就是把功效丢了。
+Z_POWER80 = 0.8416
+
+
 def power_analysis(effect: float, sd: float, *,
                    alpha: float = 0.05, power: float = 0.80) -> dict[str, Any]:
-    """要多少段才够（配对 t 检验的粗略公式）。
+    """要多少段才够（配对 t 检验）。
 
-    用正态近似：``n ≈ (z_{α/2} + z_{1-β})² · σ² / δ²``。
-    ``z`` 取 1.96 / 0.84（80% 功效）。
+    ⭐ **迭代逼近而不是套正态公式**：小样本时临界值是 `t_crit(df)`，
+    而 df 又取决于 n ⇒ 是个不动点问题。
+    用 `n ≈ (1.96+0.84)²σ²/δ²` 会在小样本区**低估**所需段数。
 
-    ⚠️ **这是粗略估计**：它是"给定效应量与标准差"的必要段数，
-    而**效应量本身往往是未知的**——那就必须先跑一小批（如 8 段）
-    用观测到的差值标准差去回填。**不能拿它当结论。**
+    ``n`` 的解：`(t_crit95(n−1) + z_{1-β})² · σ² / δ²`。
+
+    ⚠️ 这仍然只是**必要段数**（且假设效应量已知）——
+    效应量本身通常未知，那就先用小批量（如 8 段）估 `sd` 再回填。
+    **不能拿它当结论。**
     """
-    if sd is None or sd != sd or sd <= 0 or effect == 0:
-        return {"required_segs": None,
+    # ⚠️ NaN 必须**显式**挡住：`nan == 0` 是 False，
+    # 所以只写 `effect == 0` 会让 NaN 一路走到 `int(nan)` → ValueError。
+    # （这不是理论问题——测试就是这么抓到的。）
+    if (sd is None or sd != sd or sd <= 0
+            or effect is None or effect != effect or effect == 0):
+        return {"required_segs": None, "required_n": None,
                 "note": "需要非零效应与非零标准差；先用小批量估 sd"}
-    z = (1.96 if alpha == 0.05 else 2.58) + 0.8416
-    n = (z ** 2) * (sd ** 2) / (effect ** 2)
+    z = (1.96 if alpha == 0.05 else 2.58) if power == 0.80 else 1.96
+    zp = Z_POWER80 if power == 0.80 else 0.0
+    n = max(2, int(math.ceil((z + zp) ** 2 * (sd ** 2) / (effect ** 2))) + 1)
+    for _ in range(200):
+        tc = _t_alpha2(alpha, n - 1) + zp
+        need = max(2, int(math.ceil((tc ** 2) * (sd ** 2) / (effect ** 2))) + 1)
+        if need == n:
+            break
+        n = need
     return {
-        "required_segs": int(math.ceil(n)),
+        "required_segs": int(n),
+        "required_n": int(n),
         "effect": float(effect),
         "sd": float(sd),
-        "note": "粗略估计；效应量未知时应先用小批量估 sd 再回填",
+        "note": ("由 (t_crit(df) + z_功效) 迭代解出；"
+                 "效应量未知时应先用小批量估 sd 再回填"),
     }
+
+
+def _t_alpha2(alpha: float, df: int) -> float:
+    """按 ``alpha`` 取双侧临界值。只支持 0.05 / 0.01（本项目的两种用得上）。"""
+    if alpha == 0.05:
+        return t_crit95(df)
+    if alpha == 0.01:
+        # 99% 双侧：df→∞ 时 2.576，小样本按 1.35 倍粗放（仅作量级参考）
+        return 2.576 if df >= 120 else 2.576 + 6.0 / max(df, 1)
+    return t_crit95(df)
 
 
 def min_detectable_effect(sd: float, n_segs: int, *,
@@ -331,11 +440,17 @@ def min_detectable_effect(sd: float, n_segs: int, *,
     """给定段数与差值标准差，**能分辨的最小效应**。
 
     反过来问更有用：我已经跑了 K 段，那这个实验**最多能看出多大的差异**？
+
+    ⭐ 用 ``t_crit95(K−1) + z_功效`` ⇒ 与 :func:`power_analysis`
+    **互为逆运算**（有测试守住这个等式）。
+    ⚠️ 上一版写死了 `1.96+0.84`，在 df=1 时真实临界值是 12.71，
+    于是它**高估了精度**（报出比实际小得多的 MDE）。
     """
     if not (sd == sd) or sd <= 0 or n_segs < 2:
         return float("nan")
-    z = (1.96 if alpha == 0.05 else 2.58) + 0.8416
-    return z * sd / math.sqrt(n_segs)
+    zp = Z_POWER80 if power == 0.80 else 0.0
+    z = _t_alpha2(alpha, int(n_segs) - 1)
+    return (z + zp) * sd / math.sqrt(n_segs)
 
 
 # ======================================================================

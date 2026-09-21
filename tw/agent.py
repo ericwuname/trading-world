@@ -152,6 +152,10 @@ class AgentConfig:
     n_closes: int = 12
     #: 是否在风控拒绝/裁剪后**重试**一次（暂不启用，留接口）。
     retry_on_reject: bool = False
+    #: ⭐ **KPI 配置**（A6 的实验变量）。``None`` = 不给 KPI（对照组）。
+    #: ⚠️ 它会被写进 ``model_params``（因而进 ``decision_id``）——
+    #: 换了 KPI 就是换了实验，两条记录不该算出同一个 ID。
+    kpi: Any = None
 
     def __post_init__(self) -> None:
         if self.n_samples < 1:
@@ -237,6 +241,7 @@ class TradingAgent:
         can_open_reason: str = "",
         data_snapshot: str = "",
         wall_ms: int = 0,
+        kpi_state: Any = None,
     ) -> DecisionRecord:
         """跑一次完整决策，返回**已 finalize** 的记录（不落盘，由调用方决定）。
 
@@ -283,6 +288,8 @@ class TradingAgent:
                 position=position,
                 max_size=max_size,
                 n_closes=cfg.n_closes,
+                kpi=cfg.kpi,
+                kpi_state=kpi_state,
             )
             # ---- ③ 采样 ---------------------------------------------
             raws, parsed_list, latency_ms = self._sample(messages)
@@ -381,7 +388,22 @@ class TradingAgent:
         else:
             mode = (MODE_REPLAY if isinstance(self.client, ReplayClient)
                     else MODE_LIVE)
+            # ⚠️⚠️ **`prompt_template` 必须唯一标识"实际发出去的那份 prompt"**。
+            # 它进 `decision_id`（A2 的公式），而 KPI 会改变 prompt 正文
+            # ⇒ 若标签还只是 "v5"，那么
+            #    「v5 + 有 KPI」与「v5 + 无 KPI」两条**不同的**决策
+            #    会算出**同一个** decision_id（同样的 run/tick/可见状态）。
+            # 那不是"ID 不美观"，是**回放核对与 A/B 归因同时失效**：
+            # 留痕里两条记录长得一样，事后分不清哪条是哪个实验。
+            # ⇒ 把 KPI 的指纹拼进标签（改 KPI 配置 = 换实验 = 换 ID）。
             prompt_label = cfg.template
+            if cfg.kpi is not None:
+                import hashlib as _h
+                import json as _j
+                _blob = _j.dumps(cfg.kpi.describe(), sort_keys=True,
+                                 ensure_ascii=False)
+                prompt_label = (f"{cfg.template}#kpi"
+                                f"{_h.sha256(_blob.encode('utf-8')).hexdigest()[:6]}")
             # 模型名从**客户端配置**现取，不在配置里存第二份——
             # 两处存同一个东西，迟早会不一致，而留痕里"到底用了哪个模型"
             # 正是 A/B 归因的依据。
@@ -401,9 +423,14 @@ class TradingAgent:
             # 这正是我们要的（不同规则是不同的实验）。
             prompt_template=prompt_label,
             model=model_name,
-            model_params={"temperature": cfg.temperature,
-                          "max_tokens": cfg.max_tokens,
-                          "n_samples": n_samples_eff},
+            model_params={
+                "temperature": cfg.temperature,
+                "max_tokens": cfg.max_tokens,
+                "n_samples": n_samples_eff,
+                # ⚠️ KPI 是实验变量 ⇒ 必须进 model_params（进而进 decision_id），
+                # 否则"有 KPI"与"无 KPI"两条决策会算出同一个 ID。
+                "kpi": (cfg.kpi.describe() if cfg.kpi is not None else None),
+            },
             tool_calls=[],
             # ⚠️ 非空即表示"可能有外部信息进来"；回放模式下必须为空
             retrieved=[],

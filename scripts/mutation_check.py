@@ -1584,16 +1584,21 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
         [
             (
                 'tw/segmented.py',
-                '    for k, (s, e) in enumerate(ranges):\n'
-                '        per_net: dict[str, float] = {}\n'
-                '        per_run: dict[str, RunResult] = {}\n'
-                '        for name, mk in factories.items():\n'
-                '            acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n',
+                '    def _one_segment(k: int, rng: tuple[int, int]\n'
+                '                     ) -> tuple[tuple[int, int], dict[str, float],\n'
+                '                                dict[str, RunResult]]:\n'
+                '        s, e = rng\n',
                 '    _hoisted = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n'
-                '    for k, (s, e) in enumerate(ranges):\n'
-                '        per_net: dict[str, float] = {}\n'
-                '        per_run: dict[str, RunResult] = {}\n'
-                '        for name, mk in factories.items():\n'
+                '\n'
+                '    def _one_segment(k: int, rng: tuple[int, int]\n'
+                '                     ) -> tuple[tuple[int, int], dict[str, float],\n'
+                '                                dict[str, RunResult]]:\n'
+                '        s, e = rng\n',
+            ),
+            (
+                'tw/segmented.py',
+                '            # \u26a0\ufe0f 每个 (段, 配置) 一个**新账户** \u2014\u2014 两层都不能共用\n'
+                '            acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n',
                 '            acc = _hoisted\n',
             ),
         ],
@@ -1609,6 +1614,7 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             (
                 'tw/segmented.py',
                 '        for name, mk in factories.items():\n'
+                '            # \u26a0\ufe0f 每个 (段, 配置) 一个**新账户** \u2014\u2014 两层都不能共用\n'
                 '            acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n',
                 '        _seg_acc = MarginAccount(cash=float(initial_cash), cfg=MarginConfig())\n'
                 '        for name, mk in factories.items():\n'
@@ -1627,6 +1633,175 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
                 'tw/segmented.py',
                 '    lo = max(0, int(min_history))\n',
                 '    lo = 0\n',
+            ),
+        ],
+    ),
+    (
+        'M101',
+        '回填时把结果也写进 `visible_state`（或去掉"只动 outcome"的断言）'
+        '——`outcome` 含**未来信息**（后续 h 根的涨跌）。一旦它渗进 ① 可见状态，'
+        '**复盘学到的经验就会带着未来信息回流到决策里**，整条反馈链路失去意义。'
+        '⚠️ 而症状是**收益看起来变好**（它在偷看答案）——这类错误必须机械拦住',
+        [
+            (
+                'tw/outcome.py',
+                '    digest_before = state_digest(rec.visible_state)\n',
+                '    digest_before = ""\n',
+            ),
+        ],
+    ),
+    (
+        'M102',
+        'KPI 进度**在决策之后**才推进（而不是之前）'
+        '——进度里就含了**当前这一根的结果**，而当前这根的结果在决策时'
+        '还不知道 ⇒ **答案泄漏**。'
+        '症状同样是"收益看起来变好"，且不报错',
+        [
+            (
+                'tw/agent_run.py',
+                '        kpi_state = None\n'
+                '        if agent.config.kpi is not None:\n'
+                '            kpi_state = advance(\n',
+                '        kpi_state = None\n'
+                '        if False:\n'
+                '            kpi_state = advance(\n',
+            ),
+        ],
+    ),
+    (
+        'M103',
+        'KPI 去掉「在场率下限」（只留收益目标）'
+        '——单指标一定会被刷（Goodhart）：**不交易就不会亏** ⇒ '
+        '"亏了就装死"能刷分。这正是用户点名要防的两种退化之一。'
+        '注意 `kpi_verdict` 仍然会跑、仍然会返回结论，只是结论失去了分辨力',
+        [
+            (
+                'tw/kpi.py',
+                '        "presence": (st.presence_so_far >= kpi.min_presence,\n'
+                '                     st.presence_so_far, kpi.min_presence,\n'
+                '                     "在场率 ≥ 下限（防躺平）"),\n',
+                '        "presence": (True,\n'
+                '                     st.presence_so_far, kpi.min_presence,\n'
+                '                     "在场率 ≥ 下限（防躺平）"),\n',
+            ),
+        ],
+    ),
+    # ==================================================================
+    # A6：复盘 / 归因 / 经验库（2026-09-21 第十二轮，续）
+    # ==================================================================
+    (
+        'M104',
+        '经验检索把时间边界从 `<` 放松成 `<=`'
+        '——同一根 K 线内可能发生多次决策，**本轮刚生成的经验**'
+        '就会喂给**本轮的决策**。'
+        '而"复盘看得到结果、决策看不到"正是这套设计的地基：'
+        '这一行松掉，未来信息经由"经验"回流到决策，'
+        '而症状是**收益看起来变好**（它在偷看答案）',
+        [
+            (
+                'tw/reflect.py',
+                '        pool = [e for e in self._items if e.created_tick < int(at_tick)]\n',
+                '        pool = [e for e in self._items if e.created_tick <= int(at_tick)]\n',
+            ),
+        ],
+    ),
+    (
+        'M105',
+        '检索结果**不排序**（按插入顺序）'
+        '——同一条决策在不同运行/不同插入顺序下会看到**不同的经验**，'
+        '于是"经验库为空 vs 只有未来条目"的 prompt 不再逐字节相同，'
+        'V2（时间旅行安全）这条最强的等式就永远无法验证。'
+        '⚠️ 症状不是报错，而是"验证通不过但查不出为什么"',
+        [
+            (
+                'tw/reflect.py',
+                '        pool.sort(key=lambda e: (e.created_tick, e.exp_id))\n',
+                '',
+            ),
+        ],
+    ),
+    (
+        'M106',
+        '经验的时间戳采用**模型正文里给的 tick**（而不是外部时钟）'
+        '——模型只要在复盘输出里写一个更早的 tick，'
+        '就能让"自己刚说的话"在**同一时刻**被自己取回，'
+        '整条时间边界被绕过。'
+        '⚠️ 这是"把安全边界交给被约束方自己声明"的经典错误',
+        [
+            (
+                'tw/reflect.py',
+                '                               lesson=lesson, evidence_ids=ev),\n'
+                '            created_tick=int(created_tick),\n',
+                '                               lesson=lesson, evidence_ids=ev),\n'
+                '            created_tick=int(e.get("created_tick", created_tick)),\n',
+            ),
+        ],
+    ),
+    (
+        'M107',
+        '归因解析把非法 `reason` **静默丢弃**（而不是落到 unclear 并计数）'
+        '——被丢掉的条数不留痕，于是"分类分布"看起来比实际干净，'
+        '而复盘质量却在下降。'
+        '本项目对"静默丢弃"已有一贯判据：凡丢弃都要问「丢的是不是我要的数据」',
+        [
+            (
+                'tw/reflect.py',
+                '        if reason not in ATTR_REASONS:\n'
+                '            res["n_bad_reason"] += 1\n'
+                '            reason = "unclear"\n',
+                '        if reason not in ATTR_REASONS:\n'
+                '            continue\n',
+            ),
+        ],
+    ),
+    (
+        'M108',
+        '规则归因里 `timing_wrong` 的判据吞掉 `direction_wrong`'
+        '（把"曾经有利过"这一条放宽成**恒真**）'
+        '——于是"方向看反了"这一类永远判不出来，'
+        '`direction_wrong` 变成**不可达代码**：不报错、只是永不命中。'
+        '⭐ 这正是我第一版真的写出来的 bug 的等价形态'
+        '（我当时用 `markout_h` 与 `signed_move_h` 比符号，而前者已带方向 ⇒ 条件恒假）',
+        [
+            (
+                'tw/reflect.py',
+                '    if mfe_f is not None and mfe_f > _COST_EPS:\n',
+                '    if True:\n',
+            ),
+        ],
+    ),
+    (
+        'M109',
+        '复盘解析**关掉抢救路径**（输出被截断时直接返回空）'
+        '——`max_tokens` 不够是**常态**（实测 24 条归因在 1365 字符处硬截断），'
+        '而"截断了"≠"全都不能用"：前面那些条目是完整的。'
+        '关掉抢救 ⇒ 16 次复盘「解析成功 0」、归因整批丢失，'
+        '而错误信息只写「JSON 解析失败」，**看不出是截断还是模型乱答**',
+        [
+            (
+                'tw/reflect.py',
+                '            attrs, exps = _repair_truncated(text)\n'
+                '            if attrs or exps:\n',
+                '            attrs, exps = [], []\n'
+                '            if attrs or exps:\n',
+            ),
+        ],
+    ),
+    (
+        'M110',
+        '`v6` 退化成 `v4`（考核目标段没插进去）'
+        '——锚点失效时 `str.replace` 会**静默返回原串**，'
+        '于是"单一变量对照"凭空消失，而实验照跑照出数字。'
+        '⭐ 本变异体的**看门人**是 `tw/prompts.py` 里 import 期的 assert；'
+        '它会在导包时就炸 ⇒ 整份测试变红。'
+        '（⚠️ 信号是"崩了"而不是"断言失败"——这仍然是**被抓住了**，'
+        '但报告里要写清是哪一种，不能混为一谈。）',
+        [
+            (
+                'tw/prompts.py',
+                '_USER_V6 = _USER_V4.replace(_V6_ANCHOR, '
+                '_KPI_SECTION + _V6_ANCHOR, 1)\n',
+                '_USER_V6 = _USER_V4\n',
             ),
         ],
     ),

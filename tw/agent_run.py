@@ -37,6 +37,7 @@ from .account import MarginAccount
 from .agent import TradingAgent, visible_from_series
 from .decision_log import DecisionRecord
 from .order_model import AlgoOrder, OrderRequest
+from .kpi import KPIState, advance
 from .simexec import BarExecutor, ExecConfig, Fill, bars_from_series
 
 
@@ -194,6 +195,17 @@ def run_agent_session(
     res.qty_curve.append(0.0)
     res.timestamps.append(int(series.timestamp[start]) if hasattr(series, "timestamp") else start)
 
+    #: KPI 进度用一格列表包着 —— 循环里要就地改它，而 list 是可变的。
+    #: ⚠️ 起点权益用**第一根之前的权益**（= 初始权益），保证
+    #: ``return_so_far`` 从 0 开始算。
+    kpi_state_box = [KPIState(
+        initial_equity=res.initial_equity,
+        equity=res.initial_equity,
+        peak_equity=res.initial_equity,
+        bars_done=0,
+        bars_total=int(end) - int(start) + 1,
+    )]
+
     for i in range(int(start), int(end) + 1):
         bar_i = bars_from_series(series, i)
 
@@ -229,6 +241,17 @@ def run_agent_session(
             qty=max(agent._suggest_max_size(mid=mark, equity=equity), 1e-12),
             price=mark, lever=lever, marks={inst: mark},
         )
+        # ---- KPI 进度（A6）-------------------------------------------
+        # ⚠️ **必须"先推进、再决策"**：进度里若含当前这根的结果，
+        # 那就是决策时还不知道的信息 = 答案泄漏。
+        # 这里显式在 decide 之前推进，并只喂"已经发生"的量。
+        kpi_state = None
+        if agent.config.kpi is not None:
+            kpi_state = advance(
+                kpi_state_box[0], equity=equity, qty=float(pos.qty),
+                turnover_delta=float(ex.fills[-1].notional) if (
+                    ex.fills and ex.fills[-1].bar_index == i) else 0.0,
+            )
         rec = agent.decide(
             visible=vis, tick=i, run_id=run_id,
             equity=equity, cash=float(account.cash),
@@ -239,6 +262,7 @@ def run_agent_session(
             inst_exposure=pos.notional(mark),
             can_open_ok=bool(can_ok), can_open_reason=str(can_why),
             data_snapshot=data_snapshot,
+            kpi_state=kpi_state,
         )
         res.records.append(rec)
         if record_log is not None:
@@ -265,6 +289,15 @@ def run_agent_session(
         "lever": lever,
         "exec": ex.stats(),
     }
+    # ⚠️ KPI 的最终判定必须写在 ``res.meta = {...}`` **之后**——
+    # 写在前面会被那次整体赋值覆盖掉（我第一次就写错了）。
+    if agent.config.kpi is not None:
+        from .kpi import kpi_verdict
+
+        st = kpi_state_box[0]
+        res.meta["kpi"] = agent.config.kpi.describe()
+        res.meta["kpi_final"] = kpi_verdict(agent.config.kpi, st)
+        res.meta["kpi_state"] = st.to_dict(agent.config.kpi)
     return res
 
 
