@@ -333,6 +333,24 @@ assert _USER_V6.replace(_KPI_SECTION, "", 1) == _USER_V4, (
     "v6 与 v4 的差别不是「只多了一段」——单一变量对照被破坏")
 
 
+#: v7 相对 **v4** 插入的那一段 —— **它是 v7 相对 v4 的唯一变量**。
+#: ⭐ 用 v4 当基线（而不是 v6）是刻意的：v7 测的是"给经验有没有用"，
+#: 与 KPI 是两个独立的问题；混在一起就分不清是哪一个起了作用。
+_EXP_SECTION = (
+    "## ⭐ 你过去复盘得到的经验（**只含当时已经存在的**）\n\n"
+    "{experiences_txt}\n\n"
+    "⚠️ 这些经验来自**已经发生过的**决策与结果，不是预测。\n"
+    "它们是「当时知道的东西」，可能过时、也可能互相矛盾；\n"
+    "**不要因为它们就放弃自己的判断**，但如果你正准备做的事被显式提醒过，"
+    "请在理由里说明你怎么处理它。\n\n"
+)
+_USER_V7 = _USER_V4.replace(_V6_ANCHOR, _EXP_SECTION + _V6_ANCHOR, 1)
+assert _USER_V7 != _USER_V4, (
+    "v7 的经验段没插进去（锚点与 _USER_V4 对不上了）")
+assert _USER_V7.replace(_EXP_SECTION, "", 1) == _USER_V4, (
+    "v7 与 v4 的差别不是「只多了一段」——单一变量对照被破坏")
+
+
 TEMPLATES: dict[str, dict[str, str]] = {
     "v1": {"system": _SYSTEM_V1, "user": _USER_V1},
     # ------------------------------------------------------------------
@@ -425,6 +443,26 @@ TEMPLATES: dict[str, dict[str, str]] = {
     #   （"单一变量"凭空消失），而实验照跑照出数字 —— 所以那个 assert 不能省。
     # ------------------------------------------------------------------
     "v6": {"system": _SYSTEM_V4, "user": _USER_V6},
+    # ------------------------------------------------------------------
+    # v7：⭐ **经验段** = v4 + 「过去复盘得到的经验」（2026-09-21 新增）
+    #
+    # 回答用户那个问题：「这些东西（复盘结论）能不能作为经验？」
+    # v7 vs **v4**（不是 vs v6）测的是"**给经验有没有用**"——
+    # 它与"给 KPI 有没有用"是两个独立问题，混在一起就分不清是哪一个起作用。
+    #
+    # ⚠️ 经验段里的经验**必须按 `created_tick < 当前 tick` 过滤**，
+    # 而这**不是模板能保证的事**：过滤发生在 `tw/agent.py`（由
+    # `ExperienceStore.retrieve` 实现）。模板只负责渲染拿到的那几条。
+    # ⇒ "时间旅行安全"的等式（经验库为空 vs 只有未来条目 ⇒ prompt 逐字节相同）
+    #   由 `tests/test_reflect.py::TestTimeTravelSafety` 守住。
+    #
+    # ⚠️ 段里刻意写了三句"防误导"的话（见 `_EXP_SECTION`）：
+    #   ① 说明这些经验**来自已发生的事**，不是预测；
+    #   ② 提醒它们**可能过时、可能互相矛盾**；
+    #   ③ **明说"不要因此放弃自己的判断"**，并要求它在理由里说明怎么处理。
+    #   没有这三句，测到的会是"模型被一段像指令的文本牵着走"。
+    # ------------------------------------------------------------------
+    "v7": {"system": _SYSTEM_V4, "user": _USER_V7},
 }
 
 
@@ -601,6 +639,21 @@ def _features_text(feats: dict[str, float]) -> str:
     return "\n".join(rows) if rows else "（无可算指标）"
 
 
+def _experiences_text(exps: Any) -> str:
+    """渲染经验段。
+
+    ⚠️ **委托给 `tw/reflect.exp_lines`，不在这里再写一份格式化**。
+    两份格式化器一定会分叉（本项目元教训第 ② 条），
+    于是"复盘时看到的经验"与"决策时看到的经验"长得不一样，而两边都"看起来对"。
+    （这里用惰性 import 是为了避免 `prompts` ← `reflect` 的循环导入风险：
+    `reflect` 只依赖 `decision_log`，所以其实不会循环；但惰性更安全。）
+    """
+    if not exps:
+        return "（经验库为空——这是你的第一次决策，先按自己的判断做）"
+    from .reflect import exp_lines
+    return exp_lines(exps)
+
+
 def build_messages(
     visible: dict[str, Any],
     *,
@@ -614,6 +667,7 @@ def build_messages(
     n_closes: int = 12,
     kpi: Any = None,
     kpi_state: Any = None,
+    experiences: Any = None,
 ) -> list[dict[str, Any]]:
     """把 ``visible_state`` 变成 ``messages``。
 
@@ -662,6 +716,11 @@ def build_messages(
         # ⚠️ KPI 段只对 v5 有占位符；v1~v4 的模板没有 {kpi_txt}，
         # 多传一个 kwarg 给 ``str.format`` 是安全的（未被引用的会被忽略）。
         kpi_txt=_kpi_text(kpi, kpi_state),
+        # ⚠️ 同理：只有 v7 有 {experiences_txt} 占位符。
+        # **传进来的 experiences 必须是调用方已经按时间过滤过的**——
+        # 本函数**不做**过滤（它看不到时钟），所以"时间旅行安全"那条等式
+        # 由调用方（`tw/agent.py` + `ExperienceStore.retrieve`）保证。
+        experiences_txt=_experiences_text(experiences),
         n_closes=len(rc),
         recent_closes_txt=("、".join(_fmt(x, 2) for x in rc) if rc else "（无）"),
         position_txt=_position_text(position),

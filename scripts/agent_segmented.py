@@ -46,6 +46,7 @@ from tw.kpi import KPIConfig, calibrate_from_baseline  # noqa: E402
 from tw.marketdb import SOURCE_OKX, MarketStore  # noqa: E402
 from tw.policy import make_policy  # noqa: E402
 from tw.prompts import build_messages  # noqa: E402
+from tw.reflect import ExperienceStore  # noqa: E402
 from tw.risk import RiskLimits  # noqa: E402
 from tw.segmented import (  # noqa: E402
     min_detectable_effect,
@@ -115,6 +116,14 @@ def main() -> int:
     ap.add_argument("--dry", action="store_true",
                     help="只算切段与调用次数，**不联网**")
     ap.add_argument("--replay", default="")
+    # ---- 经验库（v7 的实验变量）----------------------------------------
+    ap.add_argument("--exp-from", default="",
+                    help="从 `agent_review.py` 产出的 JSON 里读回经验库。"
+                         "⚠️ 经验**必须来自同一份数据的更早一趟**；"
+                         "注入时按 `created_tick < 当前 tick` **严格**过滤"
+                         "（在 `tw/agent.py` 里做，不在这里）")
+    ap.add_argument("--exp-k", type=int, default=5,
+                    help="每次决策最多取几条经验进 prompt")
     ap.add_argument("--record", default="")
     ap.add_argument("--out-json", default="")
     args = ap.parse_args()
@@ -130,6 +139,12 @@ def main() -> int:
         raise SystemExit(
             f"❌ --kpi 只对 --template v5/v6 生效（当前 {args.template}）。"
             f"做单一变量对照请用 **v6**（v5 相对 v4 是两处改动）。")
+    # ⚠️ 同理：经验段只有 v7 有。`--exp-from` 配别的模板 ⇒ 实验变量没进 prompt，
+    # 而 `decision_id` 仍会带 `#exp` ⇒ 看起来"做了经验对照"，实际测了两遍同一个 prompt。
+    if args.exp_from and args.template != "v7":
+        raise SystemExit(
+            f"❌ --exp-from 只对 --template v7 生效（当前 {args.template}）。"
+            f"经验段是 v7 相对 v4 的**唯一变量**。")
 
     banner("多段配对实验（A6）")
 
@@ -252,6 +267,23 @@ def main() -> int:
 
     llm_name = f"llm_{args.template}"
     client = None
+    # ---- 经验库（v7）----------------------------------------------------
+    exp_store = None
+    if args.exp_from:
+        _p = Path(args.exp_from)
+        _d = json.loads(_p.read_text(encoding="utf-8"))
+        _items = _d.get("experiences") or []
+        if not _items:
+            raise SystemExit(
+                f"❌ {_p} 里没有经验（`experiences` 为空）⇒ 这一组会退化成 v4，"
+                f"而它**看起来仍然做了经验对照**。")
+        exp_store = ExperienceStore.from_dict(_items)
+        _ticks = [e.created_tick for e in exp_store]
+        print(f"\n  经验库：{len(exp_store)} 条，来自 {_p}")
+        print(f"     created_tick 范围 {min(_ticks)} ~ {max(_ticks)}"
+              f"（注入时按**严格** `<` 过滤，同一 tick 生成的本轮不可见）")
+        print(f"     ⚠️ 经验必须来自**同一份数据的更早一趟**；"
+              f"跨数据集注入会制造血缘问题。")
     if not args.rules_only:
         cfg = LLMConfig(provider=args.provider, temperature=args.temperature)
         if args.model:
@@ -279,7 +311,9 @@ def main() -> int:
                                 # 而实验**照跑、照出数字** —— 差一点得出
                                 # 「KPI 无效」的假结论。
                                 # ⇒ 是"读实际发出去的 prompt"才发现的。
-                                kpi=kpi_cfg)
+                                kpi=kpi_cfg,
+                                exp_store=exp_store,
+                                n_experiences=int(args.exp_k))
         factories[llm_name] = (lambda _c: lambda: TradingAgent(
             client=_c, config=agent_cfg, limits=RiskLimits()))(client)
 
@@ -352,6 +386,36 @@ def main() -> int:
         if prompt_ok is None:
             print("     ⚠️ 没拿到 prompt 原文（缺 --record）⇒ "
                   "只验证了模板标签，**强度不足**，建议补 --record 重跑。")
+
+    # ---- ⭐ 经验接线自检（同 KPI 那条的教训：读**实际发出去的** prompt）----
+    if exp_store is not None and not args.rules_only:
+        n_with = 0
+        n_seen = 0
+        if args.record and Path(args.record).exists():
+            with open(args.record, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    txt = " ".join(str(m.get("content", ""))
+                                   for m in (row.get("messages") or []))
+                    if "过去复盘得到的经验" not in txt:
+                        continue
+                    n_seen += 1
+                    if "经验库为空" not in txt:
+                        n_with += 1
+        print("\n  ⭐ 经验接线自检（读实际发出去的 prompt）")
+        print(f"     含经验段的 prompt：{n_seen} 条；其中真的带了经验：{n_with} 条")
+        if n_seen == 0:
+            raise AssertionError(
+                "❌ 一条 prompt 里都没有经验段 ⇒ 经验没接上，"
+                "这一组数据**不可用于经验结论**。")
+        if n_with == 0:
+            raise AssertionError(
+                "❌ 经验段全是「经验库为空」⇒ 时间过滤把所有经验都挡掉了。"
+                "最可能的原因：经验的 `created_tick` 全部 ≥ 本次运行的 tick 范围"
+                "（例如经验来自另一份/更晚的数据）。")
 
     # ---- 报告 ---------------------------------------------------------
     print("\n" + "=" * 74)

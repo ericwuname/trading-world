@@ -445,3 +445,202 @@ class TestDuplicateRate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ======================================================================
+# ⭐⭐ v7：经验段 = v4 + 「过去复盘得到的经验」
+# ======================================================================
+class TestV7IsStrictSingleVariable(unittest.TestCase):
+    """回答用户的问题：「这些东西能不能作为经验？」
+
+    `v7 = v4 + 经验段`，机械构造 + 等式守住"只有这一个变量"。
+    ⚠️ 基线是 **v4 而不是 v6**：v7 测"给经验有没有用"，
+    与"给 KPI 有没有用"是两个独立问题，混在一起分不清是哪一个起了作用。
+    """
+
+    def test_v7去掉那一段就是v4(self):
+        from tw.prompts import _EXP_SECTION, _USER_V4, _USER_V7
+        self.assertNotEqual(_USER_V7, _USER_V4)
+        self.assertEqual(_USER_V7.replace(_EXP_SECTION, "", 1), _USER_V4)
+
+    def test_v7的锚点真的存在(self):
+        from tw.prompts import _USER_V4, _V6_ANCHOR
+        self.assertIn(_V6_ANCHOR, _USER_V4)
+
+    def test_v7与v4共用同一个system(self):
+        from tw.prompts import TEMPLATES
+        self.assertIn("v7", TEMPLATES)
+        self.assertEqual(TEMPLATES["v7"]["system"], TEMPLATES["v4"]["system"])
+
+    def test_带经验时渲染出经验(self):
+        from tw.prompts import build_messages
+        e = _exp(3, "下降趋势里别接飞刀", kind="warning")
+        ms = build_messages({"mid": 100.0}, inst_id="X", bar="1H",
+                            template="v7", experiences=[e])
+        body = " ".join(str(m.get("content", "")) for m in ms)
+        self.assertIn("过去复盘得到的经验", body)
+        self.assertIn("下降趋势里别接飞刀", body)
+        self.assertNotIn("经验库为空", body)
+        self.assertIn(e.exp_id, body)      # ⭐ 经验必须可回溯
+
+    def test_无经验时明说为空(self):
+        from tw.prompts import build_messages
+        ms = build_messages({"mid": 100.0}, inst_id="X", bar="1H",
+                            template="v7", experiences=[])
+        body = " ".join(str(m.get("content", "")) for m in ms)
+        self.assertIn("经验库为空", body)
+
+    def test_v4里没有经验段(self):
+        """⚠️ 分辨力补强：确认经验段确实只在 v7 里出现。"""
+        from tw.prompts import build_messages
+        e = _exp(3, "不该出现在 v4 里")
+        ms = build_messages({"mid": 100.0}, inst_id="X", bar="1H",
+                            template="v4", experiences=[e])
+        body = " ".join(str(m.get("content", "")) for m in ms)
+        self.assertNotIn("过去复盘得到的经验", body)
+        self.assertNotIn("不该出现在 v4 里", body)
+
+
+class TestAgentInjectsExperiencesWithTimeFilter(unittest.TestCase):
+    """⭐⭐ **时间过滤在 `decide()` 里做**，不是让调用方预先过滤。
+
+    这是整条链路最容易写错的一处：
+    - 调用方预先过滤 ⇒ 可能忘，也可能用了 `<=`；
+    - 放进 `ExperienceStore.retrieve` ⇒ **唯一**的实现，`decide()` 每根调一次。
+    """
+
+    def _decide(self, *, exp_store, tick=10):
+        from tw.agent import AgentConfig, TradingAgent
+        from tw.llm import LLMConfig, LLMResponse, ScriptedClient
+
+        client = ScriptedClient(
+            config=LLMConfig(provider="agnes"), on_exhausted="hold",
+            responses=[LLMResponse(ok=True,
+                                   text='{"action":"hold","reason":"x"}')] * 5)
+        ag = TradingAgent(
+            client=client,
+            config=AgentConfig(inst_id="X", template="v7", n_samples=1,
+                               temperature=0.0, exp_store=exp_store))
+        vis = build_visible_state(mid=100.0, equity=100_000.0)
+        rec = ag.decide(visible=vis, tick=tick, run_id="R", equity=100_000.0)
+        body = "".join(str(m.get("content", ""))
+                       for c in client.calls for m in c)
+        return rec, body
+
+    def test_同tick的经验不可见(self):
+        """⭐ `created_tick == tick` 必须**看不见**（严格 `<`）。"""
+        st = ExperienceStore([_exp(10, "本 tick 刚生成的")])
+        _rec_, body = self._decide(exp_store=st, tick=10)
+        self.assertNotIn("本 tick 刚生成的", body)
+        self.assertIn("经验库为空", body)
+
+    def test_更早的经验可见(self):
+        """⚠️ 分辨力补强：必须有**看得见**的情形，否则上面那条测试
+        可以靠"永远不注入"通过。"""
+        st = ExperienceStore([_exp(9, "上一根生成的")])
+        _rec_, body = self._decide(exp_store=st, tick=10)
+        self.assertIn("上一根生成的", body)
+
+    def test_没有store时v7也渲染经验段但说为空(self):
+        """⚠️ **这条测试的预期改过一次，值得记下来。**
+
+        我原来断言"不传 store 就不渲染经验段"——**错了**。
+        v7 模板里那个占位符一直在，所以不传 store 时渲染的是
+        「（经验库为空——这是你的第一次决策…）」。
+        这**更诚实**：模型知道"我现在没有经验可用"，而不是看到一段空白。
+        ⇒ 真正"没有经验段"的是 **v4**（见上一个测试类）。
+        """
+        _rec_, body = self._decide(exp_store=None, tick=10)
+        self.assertIn("过去复盘得到的经验", body)
+        self.assertIn("经验库为空", body)
+
+    def test_有经验库会换decision_id(self):
+        """⭐⭐ ID 必须**唯一标识实际发出去的 prompt**。
+
+        ⚠️ 第一版写成只拼一个存在性标记 `#exp`，于是
+        **空经验库**与**有 1 条可见经验**算出**同一个 ID**，
+        而两者的 prompt **内容不同** ⇒ 留痕里两条"长得一样"，A/B 归因失效。
+        （这是 KPI 那条教训的第一次复现。）
+
+        修法两条规矩：① 触发的判据是**模板有没有那个占位符**；
+        ② 拼的是**实际渲染出来的经验文本的哈希**。
+        ⇒ 下面的断言正好把这两条都钉住。
+        """
+        r_none, body_none = self._decide(exp_store=None, tick=10)
+        r_empty, body_empty = self._decide(exp_store=ExperienceStore([]),
+                                          tick=10)
+        r_has, body_has = self._decide(
+            exp_store=ExperienceStore([_exp(1, "旧经验")]), tick=10)
+
+        # ① prompt 相同 ⇒ ID 必须相同（"没有 store" 与 "空 store" 渲染一样）
+        self.assertEqual(body_none, body_empty)
+        self.assertEqual(r_none.decision_id, r_empty.decision_id)
+        # ② prompt 不同 ⇒ ID 必须不同（这是**真正的**那条）
+        self.assertNotEqual(body_empty, body_has)
+        self.assertNotEqual(r_empty.decision_id, r_has.decision_id)
+        self.assertIn("#exp", r_has.prompt_template)
+
+    def test_经验数进model_params(self):
+        st = ExperienceStore([_exp(1, "a"), _exp(2, "b")])
+        r, _ = self._decide(exp_store=st, tick=10)
+        self.assertEqual(r.model_params.get("exp_store_size"), 2)
+        self.assertIsNotNone(r.model_params.get("n_experiences"))
+
+    def test_确定性_id可复现(self):
+        """同一配置两次跑必须给同一个 ID（否则回放核对失去意义）。"""
+        st = ExperienceStore([_exp(1, "旧经验")])
+        a, _ = self._decide(exp_store=st, tick=10)
+        b, _ = self._decide(exp_store=ExperienceStore([_exp(1, "旧经验")]),
+                            tick=10)
+        self.assertEqual(a.decision_id, b.decision_id)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestReviewAtTickNoLookahead(unittest.TestCase):
+    """⭐⭐ **复盘时刻必须"等所有结果都实现了"**（最容易漏的一层）。
+
+    复盘要用 `outcome`，而 `outcome` 是"决策后 `horizon` 根"的结果。
+    ⇒ 若把经验的 `created_tick` 记成**窗口最后一根**，
+    这批经验在 `last+1` 就可被检索，却编码了**到 `last+horizon`** 的信息
+    ⇒ 凭空多出 `horizon − 1` 根前视，而**不报错**。
+
+    实测后果（horizon=4）：带经验那一臂比对照多"看"了 3 根未来
+    ⇒ **收益看起来变好**。这正是本项目最怕的那类静默错误。
+    """
+
+    def test_时刻是最后一根加horizon(self):
+        from tw.reflect import review_at_tick
+        recs = [_rec(10), _rec(12), _rec(14)]
+        self.assertEqual(review_at_tick(recs, horizon=4), 18)
+
+    def test_horizon越大时刻越晚(self):
+        from tw.reflect import review_at_tick
+        recs = [_rec(10)]
+        self.assertLess(review_at_tick(recs, horizon=1),
+                        review_at_tick(recs, horizon=10))
+
+    def test_空窗口返回零(self):
+        from tw.reflect import review_at_tick
+        self.assertEqual(review_at_tick([], horizon=4), 0)
+
+    def test_刚生成的经验不可能在结果实现之前可见(self):
+        """把三件事接起来验：**生成时刻 ≥ 最后一根 + horizon**
+        ⇒ 那些被复盘用到的 outcome（≤ last+horizon）**都不会进未来**。
+        """
+        from tw.reflect import review_at_tick
+        last = 20
+        horizon = 4
+        at_tick = review_at_tick([_rec(last)], horizon=horizon)
+        # 被复盘用到的最大 tick（outcome 的右端）
+        max_used = last + horizon
+        # 经验最早可被检索的时刻
+        first_visible = at_tick + 1
+        self.assertGreater(first_visible, max_used - 1)
+        self.assertEqual(at_tick, max_used)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1805,6 +1805,53 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M111',
+        '经验的时间戳从「窗口最后一根 **+ horizon**」退化成「窗口最后一根」'
+        '——复盘用到的 `outcome` 延伸到 `last + horizon`，'
+        '而经验在 `last + 1` 就可被检索 ⇒ **凭空多出 `horizon − 1` 根前视**'
+        '（实测 horizon=4 ⇒ 多 3 根）。'
+        '症状：`v7`（带经验）比 `v4` 多"看"了未来 ⇒ **收益看起来变好**，'
+        '而且**不报错**。这是"回填延迟 = 复盘可见边界"这条纪律的直接违反',
+        [
+            (
+                'tw/reflect.py',
+                '    return max(ticks) + int(horizon)\n',
+                '    return max(ticks)\n',
+            ),
+        ],
+    ),
+    (
+        'M112',
+        '`decision_id` 里的经验标记退化成**只拼存在性**（不拼内容哈希）'
+        '——于是「空经验库」与「有 1 条可见经验」在同一 run/tick/可见状态下'
+        '算出**同一个 ID**，而两者的 prompt **内容不同** ⇒ '
+        '留痕里两条"长得一样"、A/B 归因与回放核对同时失效。'
+        '⭐ 这正是 KPI 那条教训（模板要唯一标识**实际发出去的** prompt）的复现',
+        [
+            (
+                'tw/agent.py',
+                '                _sig = _h.sha256(_el(_exps).encode("utf-8"))'
+                '.hexdigest()[:6]\n'
+                '                prompt_label = f"{prompt_label}#exp{_sig}"\n',
+                '                prompt_label = f"{prompt_label}#exp"\n',
+            ),
+        ],
+    ),
+    (
+        'M113',
+        '经验检索把 `k` 截断去掉（返回**全部**历史经验，而不是最近 k 条）'
+        '——段数一多，prompt 会被几十条经验撑爆，'
+        '而更隐蔽的后果是：**经验的时间边界还在，但"最近优先"没了**'
+        '（旧经验与新经验混在一起），于是测到的是"长记忆"而不是"经验有用"',
+        [
+            (
+                'tw/reflect.py',
+                '        return pool[-k:] if k > 0 else []\n',
+                '        return pool if k > 0 else []\n',
+            ),
+        ],
+    ),
 
 ]
 

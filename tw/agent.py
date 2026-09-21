@@ -47,7 +47,7 @@ from .llm import LLMClient, ReplayClient
 from .order_model import AlgoOrder, OrderRequest
 from .parse import consistency, majority_sample, parse_decision
 from .policy import validate_policy_output
-from .prompts import DEFAULT_TEMPLATE, build_messages
+from .prompts import DEFAULT_TEMPLATE, TEMPLATES, build_messages
 from .risk import RiskLimits, check
 
 #: 决策模式。``live`` = 真的联网问；``replay_nonet`` = 只从录制里取；
@@ -156,6 +156,17 @@ class AgentConfig:
     #: ⚠️ 它会被写进 ``model_params``（因而进 ``decision_id``）——
     #: 换了 KPI 就是换了实验，两条记录不该算出同一个 ID。
     kpi: Any = None
+    #: ⭐ **经验库**（A6 的实验变量 v7）。``None`` = 不给经验（对照组）。
+    #:
+    #: ⚠️⚠️ 它必须是 ``tw.reflect.ExperienceStore`` 而不是一个 `list`：
+    #: 取经验**必须按 `created_tick < 当前 tick` 严格过滤**，
+    #: 而"当前 tick"只有 ``decide()`` 知道。
+    #: 让调用方预先过滤是不可靠的——调用方可能忘了，也可能用了 `<=`。
+    #: ⇒ 把过滤放进 `ExperienceStore.retrieve`（**唯一**的实现），
+    #: 由 ``decide()`` 每根调用一次。
+    exp_store: Any = None
+    #: 每次决策最多取几条经验进 prompt（默认 5；与 `ReviewConfig` 的默认一致）。
+    n_experiences: int = 5
 
     def __post_init__(self) -> None:
         if self.n_samples < 1:
@@ -278,6 +289,16 @@ class TradingAgent:
             messages = []
         else:
             # ---- ② 构造 prompt ---------------------------------------
+            #: 经验段的占位符。用它判断**这个模板到底会不会渲染经验段**——
+            #: 比"有没有传 exp_store"准确（v7 即使没传 store 也会渲染"为空"那句）。
+            _EXP_SLOT = "{experiences_txt}"
+            _tpl_user = str(TEMPLATES.get(cfg.template, {}).get("user", ""))
+            # ⚠️ **在 decide 内部取经验**（不是让调用方传一个 list）：
+            # 过滤要用**当前 tick**，而只有这里才知道它。
+            # `retrieve` 用严格 `<`（同 tick 生成的经验本轮不可见）。
+            _exps = (cfg.exp_store.retrieve(at_tick=int(tick),
+                                            k=cfg.n_experiences)
+                     if cfg.exp_store is not None else [])
             messages = build_messages(
                 visible,
                 inst_id=cfg.inst_id,
@@ -290,6 +311,7 @@ class TradingAgent:
                 n_closes=cfg.n_closes,
                 kpi=cfg.kpi,
                 kpi_state=kpi_state,
+                experiences=_exps,
             )
             # ---- ③ 采样 ---------------------------------------------
             raws, parsed_list, latency_ms = self._sample(messages)
@@ -404,6 +426,23 @@ class TradingAgent:
                                  ensure_ascii=False)
                 prompt_label = (f"{cfg.template}#kpi"
                                 f"{_h.sha256(_blob.encode('utf-8')).hexdigest()[:6]}")
+            if _EXP_SLOT in _tpl_user:
+                # ⚠️⚠️ **这里第一版写成只拼一个 `#exp` 存在性标记，是错的。**
+                # 后果：**空经验库**与**有 1 条可见经验**在同一 run/tick/可见状态
+                # 下算出**同一个 decision_id**——而两者的 prompt **内容不同**。
+                # ⇒ 留痕里两条"长得一样"，A/B 归因与回放核对同时失效。
+                # 这正是 KPI 那条教训（"`prompt_template` 必须唯一标识
+                # **实际发出去的** prompt"）的第一次复现。
+                #
+                # ⭐ 现在两条规矩：
+                #   ① 触发的判据是**模板里有没有那个占位符**
+                #      （不是"有没有传 store"）⇒ prompt 相同必然 ID 相同；
+                #   ② 拼的是**实际渲染出来的经验文本的哈希**
+                #      ⇒ prompt 不同必然 ID 不同。
+                import hashlib as _h
+                from .reflect import exp_lines as _el
+                _sig = _h.sha256(_el(_exps).encode("utf-8")).hexdigest()[:6]
+                prompt_label = f"{prompt_label}#exp{_sig}"
             # 模型名从**客户端配置**现取，不在配置里存第二份——
             # 两处存同一个东西，迟早会不一致，而留痕里"到底用了哪个模型"
             # 正是 A/B 归因的依据。
@@ -430,6 +469,11 @@ class TradingAgent:
                 # ⚠️ KPI 是实验变量 ⇒ 必须进 model_params（进而进 decision_id），
                 # 否则"有 KPI"与"无 KPI"两条决策会算出同一个 ID。
                 "kpi": (cfg.kpi.describe() if cfg.kpi is not None else None),
+                # ⚠️ 经验库同样是实验变量 ⇒ 进 model_params（因而进 decision_id）
+                "exp_store_size": (len(cfg.exp_store)
+                                   if cfg.exp_store is not None else None),
+                "n_experiences": (cfg.n_experiences
+                                  if cfg.exp_store is not None else None),
             },
             tool_calls=[],
             # ⚠️ 非空即表示"可能有外部信息进来"；回放模式下必须为空

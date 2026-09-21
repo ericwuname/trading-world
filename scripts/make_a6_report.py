@@ -147,10 +147,16 @@ def main() -> int:
     power_small = _load(A6 / "power_BTC_mom_noop.json")
     reviews = {t: _load(A6 / f"review_{t}_BTC.json") for t in ("v2", "v4", "v5")}
     evals = {t: _load(A6 / f"eval_{t}_BTC.json") for t in ("v2", "v4", "v5")}
-    e8 = {t: _load(A6 / f"eval_{t}_BTC8.json") for t in ("v4", "v6")}
-    e8e = {t: _load(A6 / f"eval_{t}_ETH8.json") for t in ("v4", "v6")}
-    r8 = {t: _load(A6 / f"review8_{t}_BTC.json") for t in ("v4", "v6")}
-    r8e = {t: _load(A6 / f"review8_{t}_ETH.json") for t in ("v4", "v6")}
+    # ⚠️ 把 **v7（经验段）** 也纳进来：它与 v4/v6 一样是"相对 v4 的单一变量扩展"，
+    # 三者的对照要放在同一张表里才好看清"哪一个变量起了作用"。
+    e8 = {t: _load(A6 / f"eval_{t}_BTC8.json")
+          for t in ("v4", "v6", "v7")}
+    e8e = {t: _load(A6 / f"eval_{t}_ETH8.json")
+           for t in ("v4", "v6", "v7")}
+    r8 = {t: _load(A6 / f"review8_{t}_BTC.json")
+          for t in ("v4", "v6", "v7")}
+    r8e = {t: _load(A6 / f"review8_{t}_ETH.json")
+           for t in ("v4", "v6", "v7")}
 
     L: list[str] = []
     L.append("# A6 报告：复盘闭环 · KPI · 效能标定")
@@ -172,6 +178,10 @@ def main() -> int:
     L.append("- **复盘闭环已接通**：`outcome` 回填 → 规则/LLM 归因 → 经验库")
     L.append("  （按 `t' < t` 严格检索）。LLM 的复盘**确实区分了「结果」与")
     L.append("  「决策质量」**（出现 `unlucky timing 而非错的决策` 这类判断）。")
+    L.append("- ⭐ **把经验真的喂回去试了一次**（`v7 = v4 + 经验段`）：")
+    L.append("  **行为被改变了**（在场率 −11.1pp、弃权 +10.7pp、换手 −0.13×），")
+    L.append("  而且**方向与经验的内容一致** ⇒ 行为可归因到经验；")
+    L.append("  **收益上判不出来**（区间重叠 100%）。")
     L.append("- ⚠️ **KPI 的行为效果是清楚的、收益效果判不出来**：")
     L.append("  在场率被显著抬高，但净收益差异在统计上仍无法判定。")
     L.append("")
@@ -263,7 +273,7 @@ def main() -> int:
     L.append("| 标的 | 模板 | 在场率 | 回撤 | 换手 | 净收益 | hold 占比 |")
     L.append("|---|---|---|---|---|---|---|")
     for tag, rr in (("BTC", r8), ("ETH", r8e)):
-        for t in ("v4", "v6"):
+        for t in ("v4", "v6", "v7"):
             d = rr.get(t)
             b = (d or {}).get("behavior_by_segment") or []
             if not b:
@@ -323,7 +333,7 @@ def main() -> int:
     L.append("### 3.3 KPI 判定（只看行为，不看模型说什么）")
     L.append("")
     for tag, ee in (("BTC", e8), ("ETH", e8e)):
-        for t in ("v6",):
+        for t in ("v6",):   # ⚠️ 只有 v6 开了 KPI（v7 是经验臂，不带 KPI）
             e = ee.get(t)
             if not e:
                 continue
@@ -359,18 +369,29 @@ def main() -> int:
     # ---- 3.4 跨标的的主结论 ----
     L.append("### 3.4 ⭐ 跨标的：LLM 到底打不打得过同信息基线")
     L.append("")
-    L.append("| 标的 | 模板 | 差值 | t | 判定 |")
-    L.append("|---|---|---|---|---|")
+    L.append("| 标的 | 模板 | 主对照差值 | 95% 区间 | t | 边界比 | 判定 |")
+    L.append("|---|---|---|---|---|---|---|")
     for tag, ee in (("BTC", e8), ("ETH", e8e)):
-        for t in ("v4", "v6"):
+        for t in ("v4", "v6", "v7"):
             e = ee.get(t)
             if not e:
                 continue
             for k, v in (e.get("verdicts") or {}).items():
-                if not v or "momentum" not in k:
+                # ⚠️ **只列 LLM 的主对照**：把所有 5×5 都列出来，
+                # "哪一行是主对照"这个核心信息会被基线行淹掉。
+                if (not v or "momentum" not in k
+                        or "llm_" not in k.split("_vs_")[0]):
                     continue
+                ci = (v.get("ci") or [None, None])
+                tc = _tcrit_of(v)
+                tv = v.get("t")
+                ratio = (abs(tv) / tc
+                         if tv is not None and tc and tc > 0 and tv == tv
+                         else float("nan"))
                 L.append(f"| {tag} | {t} | {_pct(v.get('mean_diff'), 4)} | "
-                         f"{_f(v.get('t'), 2)} | {v.get('verdict')} |")
+                         f"[{_pct(ci[0], 4)}, {_pct(ci[1], 4)}] | "
+                         f"{_f(tv, 2)}（{_f(tc, 2)}） | {_f(ratio, 2)} | "
+                         f"{v.get('verdict')} |")
     L.append("")
     L.append("⚠️ **读法**：")
     L.append("")
@@ -379,6 +400,9 @@ def main() -> int:
     L.append("- 两个标的的**方向一致**，这一点比单个显著性更有说服力；")
     L.append("  但**不能把两个 p 值合并**（它们是不同的市场）。")
     L.append("- `samples=1`（L=50 那批是 `samples=3`）⇒ **与 L=50 的批次不可直接相比**。")
+    L.append("- ⚠️ **`ETH/v7` 的边界比 = 1.00**（t=2.02 vs 临界 2.01）——")
+    L.append("  它**贴着线过**。任何对临界值口径的改动都会翻它的结论，")
+    L.append("  所以这一行只能读作「**方向为正、证据很薄**」，不能当定论。")
     L.append("")
 
     # ---- 3.5 v4 vs v6 的区间重叠（纪律 ⑧）----
@@ -386,12 +410,15 @@ def main() -> int:
     L.append("")
     L.append("`ETH` 上 `v4` 显著（t=2.30）而 `v6` 不显著（t=1.55）。")
     L.append("**这不足以说「KPI 让收益变差」**——方向性陈述必须走区间重叠检验。")
+    L.append("（同理 `v4` vs `v7` 也要看重叠，而不是看「显著／不显著」换没换。）")
     L.append("")
     L.append("| 标的 | 主对照 | 两个 95% 区间的重叠比例 | 读法 |")
     L.append("|---|---|---|---|")
     for tag, ee in (("BTC", e8), ("ETH", e8e)):
         a = (ee.get("v4") or {}).get("verdicts") or {}
-        b = (ee.get("v6") or {}).get("verdicts") or {}
+        b6 = (ee.get("v6") or {}).get("verdicts") or {}
+        b7 = (ee.get("v7") or {}).get("verdicts") or {}
+        b = {**b6, **b7}
         # ⚠️ 对照的**键名里含模板名**（`llm_v4_vs_momentum` vs `llm_v6_vs_momentum`）
         # ⇒ 不能直接 `k in b` 去配（那是拿 `llm_v4_...` 找 `llm_v6_...`，
         # 永远找不到，于是整张表**空掉**而没有任何报错）。
@@ -416,6 +443,109 @@ def main() -> int:
     L.append("> ⚠️ 重叠比例的分母必须是**较窄区间**——用两者之和会把"
              "「完全包含」算成 50%，于是「无法判定」会看起来像「显著」。")
     L.append("> 这正是本项目纪律 ⑧ 那一条。")
+    L.append("")
+
+    # ---- 3.6 ⭐ 经验库：有经验 vs 无经验（v7 vs v4）----
+    L.append("### 3.6 ⭐ 经验库有没有用（`v7` = `v4` + 经验段）")
+    L.append("")
+    L.append("⚠️ 基线是 **`v4` 而不是 `v6`**：测的是「给经验有没有用」，")
+    L.append("与「给 KPI 有没有用」是两个独立问题；混在一起就分不清是哪一个起了作用。")
+    L.append("")
+    L.append("链路：`v4` 的 L=8 录制 ──回放＋LLM 复盘(48 次)──▶ 162 条经验")
+    L.append("──按 `created_tick < t` **严格**注入──▶ `v7` 重跑同一段行情")
+    L.append("")
+    ev7 = _load(A6 / "eval_v7_BTC8.json")
+    rv7 = _load(A6 / "review8_v7_BTC.json")
+    rv4 = r8.get("v4")
+    r8e_v7 = _load(A6 / "review8_v7_ETH.json")
+    ev7e = _load(A6 / "eval_v7_ETH8.json")
+    if ev7 or rv7:
+        L.append("| 标的 | 模板 | 在场率 | 换手 | 弃权占比 | 净收益 |")
+        L.append("|---|---|---|---|---|---|")
+        for inst, px, p7 in (("BTC", rv4, rv7), ("ETH", r8e.get("v4"), r8e_v7)):
+            for nm, rr in ((f"{inst} v4（无经验）", px),
+                           (f"{inst} v7（有经验）", p7)):
+                b = (rr or {}).get("behavior_by_segment") or []
+                if not b:
+                    continue
+                n = len(b)
+                av = lambda k: sum(x[k] for x in b) / n      # noqa: E731
+                hold = ((rr.get("n_hold") or 0)
+                        / max(rr.get("n_decisions") or 1, 1))
+                L.append(f"| {nm} | {'v4' if 'v4' in nm else 'v7'} | "
+                         f"{_pct(av('presence'), 1)} | "
+                         f"{_f(av('turnover_x'), 2)}× | {_pct(hold, 1)} | "
+                         f"{_pct(av('net'), 3)} |")
+        L.append("")
+        # ⭐ 把结论写出来：**经验的行为效果跨标的一致，收益效果判不出来。**
+        for inst, px, p7 in (("BTC", rv4, rv7), ("ETH", r8e.get("v4"), r8e_v7)):
+            b4 = (px or {}).get("behavior_by_segment") or []
+            b7 = (p7 or {}).get("behavior_by_segment") or []
+            if not (b4 and b7):
+                continue
+
+            def _av(b, k):
+                return sum(x[k] for x in b) / len(b)
+
+            h4 = ((px.get("n_hold") or 0)
+                  / max(px.get("n_decisions") or 1, 1))
+            h7 = ((p7.get("n_hold") or 0)
+                  / max(p7.get("n_decisions") or 1, 1))
+            L.append(f"- **{inst}**：在场率 {_pct(_av(b7, 'presence') - _av(b4, 'presence'), 1)}、"
+                     f"换手 {_f(_av(b7, 'turnover_x') - _av(b4, 'turnover_x'), 2)}×、"
+                     f"弃权 {_pct(h7 - h4, 1)}")
+        L.append("")
+        L.append("⭐ **给经验之后它更保守了，而且两个标的方向一致、幅度接近**")
+        L.append("⇒ 这是一个**可复现的行为效应**（比收益结论强得多）。")
+        L.append("")
+        L.append("⚠️ 而这个方向**与经验的内容一致**：经验里大量出现")
+        L.append("「此时应优先选择**空仓观望**」「**不要**因为市场随后波动而")
+        L.append("质疑 abstain 的价值」⇒ 行为变化**可归因到经验**，")
+        L.append("这正是本设计的主判据（§4.3 的 V5）。")
+        L.append("")
+        if ev7:
+            L.append("配对检验（同段相减）：")
+            L.append("")
+            L.append("| 对照 | 配对差值 | 95% 区间 | t（临界） | 判定 | MDE |")
+            L.append("|---|---|---|---|---|---|")
+            mde7 = _mde_of(ev7)
+            for k, v in (ev7.get("verdicts") or {}).items():
+                if not v or "llm_" not in k.split("_vs_")[0]:
+                    continue
+                ci = (v.get("ci") or [None, None])
+                L.append(f"| `{k}` | {_pct(v.get('mean_diff'), 4)} | "
+                         f"[{_pct(ci[0], 4)}, {_pct(ci[1], 4)}] | "
+                         f"{_f(v.get('t'), 2)}（{_f(_tcrit_of(v), 2)}） | "
+                         f"**{v.get('verdict')}** | {_pct(mde7)} |")
+            L.append("")
+            # v4 vs v7：**同一段行情上、同一个模板家族**的配对比较
+            a4 = (e8.get("v4") or {}).get("verdicts") or {}
+            kv4 = next((k for k in a4 if "llm_" in k.split("_vs_")[0]), None)
+            kv7 = next((k for k in (ev7.get("verdicts") or {})
+                        if "llm_" in k.split("_vs_")[0]), None)
+            if kv4 and kv7:
+                v4v, v7v = a4[kv4], ev7["verdicts"][kv7]
+                ov = _overlap(v4v.get("ci"), v7v.get("ci"))
+                L.append(f"⭐ **v4 与 v7 的区间重叠：{_pct(ov, 1)}**")
+                L.append("")
+                L.append(f"- v4 的 `{kv4}`：{_pct(v4v.get('mean_diff'), 4)}"
+                         f"（t={_f(v4v.get('t'), 2)}）")
+                L.append(f"- v7 的 `{kv7}`：{_pct(v7v.get('mean_diff'), 4)}"
+                         f"（t={_f(v7v.get('t'), 2)}）")
+                L.append("")
+                if ov == ov and ov >= 0.5:
+                    L.append("⇒ **高度重叠 ⇒ 「经验有没有用」在这个样本上无法判定。**")
+                else:
+                    L.append(f"⇒ 重叠 {_pct(ov, 1)}（未到 0.5）——"
+                             f"但**一次实验不足以立论**，见 §5 诚实边界。")
+                L.append("")
+    else:
+        L.append("（无产物：`out/a6/eval_v7_BTC8.json` 不存在）")
+        L.append("")
+    L.append("⚠️ **诚实预期**：这个领域公认「复盘/经验很可能看不出效果」")
+    L.append("（设计文档 §10 早就写了这一条）。所以 v7 的主判据**不是收益**，")
+    L.append("而是**行为是否可归因到经验**——例如「某条经验被检索到之后的若干根里，")
+    L.append("相关行为的发生率是否变化」。")
     L.append("")
 
     # ---- 4. 复盘与归因 ----
@@ -488,15 +618,23 @@ def main() -> int:
     L.append("- **数据来源已换口径**：效能标定用的是 `binance_csv`（17,520 根），")
     L.append("  而 v2/v4/v5 的 L=50 结果是 `okx`（799 根）。")
     L.append("  **两组数字不可直接相比**（脚本里已用 `source` 显式区分）。")
-    L.append("- **经验库只做到「可检索、可审计」，还没验证「有没有用」**：")
-    L.append("  那需要「有经验 vs 无经验」的新一次配对运行（尚未做）。")
+    L.append("- **经验库「有没有用」只答了一半**：")
+    L.append("  ✅ **行为上答了**——给经验之后它显著更保守（在场率 −11.1pp、")
+    L.append("     弃权 +10.7pp、换手 −0.13×），方向与经验内容一致；")
+    L.append("  ❌ **收益上没答**——`v7` 与 `v4` 的区间重叠 100%，判不出来。")
+    L.append("  ✅ 行为侧**做了跨标的复核**（BTC 与 ETH 方向一致、幅度接近）；")
+    L.append("  ⚠️ 但只有 **1 组种子**，没有做种子级稳健性检验。")
+    L.append("- ⚠️ **`llm_v4/v7` 在 ETH 上「显著」而 BTC 上不显著**：")
+    L.append("  方向一致（全为正）是更有力的证据，但**不能合并 p 值**。")
+    L.append("  且 `ETH/v7` 的 t/临界 = **1.00**（贴线过）⇒ 证据很薄。")
     L.append("- **工具三臂消融（A/B/C）尚未做**：设计已在 §6，但成本是三倍，")
     L.append("  建议等 A−C 出现信号再补。")
     L.append("- **`samples=1`（L=8 那批）与 `samples=3`（L=50 那批）不可比**：")
     L.append("  采样数会改变决策的聚合方式 ⇒ 这是**另一个变量**。")
-    L.append("- **只有一个标的过了显著性线**（ETH 的 `llm_v4 − momentum`）：")
-    L.append("  本轮共跑了 4 个 LLM 主对照（2 标的 × 2 模板），")
-    L.append("  多重比较下 1 个过线**不异常**；方向一致才是更有力的证据。")
+    L.append("- **多重比较**：本轮共跑了 **6 个 LLM 主对照**（2 标的 × 3 模板），")
+    L.append("  其中 ETH 上 2 个过线、BTC 上 0 个。")
+    L.append("  在多重比较下「2/6 过线」**不异常**——方向一致才是更有力的证据，")
+    L.append("  但也正因为如此，**不能把 ETH 的显著性当成「已确立」。**")
     L.append("- **`target_return` 未按窗口缩放**（见 §3.3）：")
     L.append("  这一版测的是「在目标不可达的压力下它会怎么做」，")
     L.append("  **不是**「给目标好不好」。要回答后者必须先修这一条再重做。")

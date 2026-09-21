@@ -363,13 +363,53 @@ def _rec_brief(rec: DecisionRecord) -> dict[str, Any]:
     }
 
 
-def _exp_lines(exps: Iterable[Exp]) -> str:
+def review_at_tick(records: Iterable[DecisionRecord], *,
+                   horizon: int) -> int:
+    """⭐ **复盘发生的时刻** = 窗口最后一根 + `horizon`。
+
+    ⚠️⚠️ 这一行是"三层安全边界"里**最容易漏掉的一层**，我第一版就写错了。
+
+    复盘要用到 `outcome`，而 `outcome` 是"决策后 `horizon` 根"的结果
+    （见 `tw/outcome.py`：`t + horizon <= t_now` 才有值）。
+    ⇒ 若把 `created_tick` 记成**窗口最后一根**，
+    那么这批经验里编码了**到 `last + horizon` 为止**的信息，
+    而它们在 `last + 1` 就已经可被检索 —— **凭空多了 `horizon − 1` 根的前视**。
+
+    实测后果：`horizon=4` 时经验在 T+1 可见却"知道"到 T+4 的事
+    ⇒ `v7`（带经验）比 `v4` 多看了 3 根未来 ⇒ **收益看起来变好**，
+    而且**不报错**。这是本项目最怕的一类错误（与"回填污染 visible_state"同源）。
+
+    ⇒ 正确做法：`created_tick = max(tick) + horizon`，
+    即"**等所有结果都实现了**"才算这条经验存在。
+
+    ⚠️ 第二层注意：`horizon` 必须与 `outcome` 回填时用的**同一个值**。
+    两个地方各写一个数，迟早会不一致（本项目元教训第 ② 条）。
+    """
+    ticks = [int(r.tick) for r in records]
+    if not ticks:
+        return 0
+    return max(ticks) + int(horizon)
+
+
+def exp_lines(exps: Iterable[Exp]) -> str:
+    """把经验排成 prompt 里的一段文本（**唯一实现**）。
+
+    ⚠️ 这个名字是**公开**的：`tw/prompts.py` 的 v7 模板要用它渲染经验段。
+    留成私有（`_exp_lines`）会让 prompts 里再抄一份**格式化的第二实现**——
+    而两份格式化器一定会分叉（本项目元教训第 ② 条），
+    于是"复盘时看到的经验"与"决策时看到的经验"长得不一样，
+    而两边都"看起来对"。
+    """
     items = list(exps)
     if not items:
         return "（无）"
     return "\n".join(
         f"- [{e.exp_id}] {json.dumps(e.condition, ensure_ascii=False)}"
         f" → {e.lesson}" for e in items)
+
+
+#: 向后兼容的私有别名（旧的调用点仍可用）。
+_exp_lines = exp_lines
 
 
 def build_review_messages(
@@ -581,4 +621,6 @@ __all__ = [
     "parse_review",
     "merits_to_store",
     "duplicate_rate",
+    "exp_lines",
+    "review_at_tick",
 ]

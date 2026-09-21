@@ -49,6 +49,7 @@ from tw.marketdb import SOURCE_OKX, MarketStore  # noqa: E402
 from tw.outcome import BackfillConfig, backfill  # noqa: E402
 from tw.reflect import (  # noqa: E402
     ATTR_REASONS,
+    ExperienceStore,
     Exp,
     ExperienceStore,
     ReviewConfig,
@@ -58,6 +59,7 @@ from tw.reflect import (  # noqa: E402
     duplicate_rate,
     merits_to_store,
     parse_review,
+    review_at_tick,
 )
 from tw.risk import RiskLimits  # noqa: E402
 from tw.segmented import run_paired_segments  # noqa: E402
@@ -95,6 +97,10 @@ def main() -> int:
     ap.add_argument("--template", default="v2")
     ap.add_argument("--kpi", action="store_true",
                     help="重建 prompt 时带上 KPI（v5 录制必须加）")
+    ap.add_argument("--exp-from", default="",
+                    help="重建 prompt 时注入经验库（v7 录制必须给）。"
+                         "⚠️ 与 `--kpi-json` 同理：**prompt 必须与被录制时"
+                         "逐字节一致**，否则回放全部未命中（覆盖率 0.0%）")
     ap.add_argument("--kpi-json", default="",
                     help="从这份 segmented 评估 JSON 里读回 ``kpi`` 配置。"
                          "⚠️ **回放的 prompt 必须与被录制时逐字节一致**——"
@@ -174,11 +180,23 @@ def main() -> int:
         print(f"  KPI（用于重建 prompt）：{kpi_cfg.describe()}")
         print(f"     来源：{src_kpi}")
 
+    # ⚠️ 同理：注入经验库也是"影响 prompt 正文"的配置，必须原样重建。
+    exp_store = None
+    if args.exp_from:
+        _ep = Path(args.exp_from)
+        _ed = json.loads(_ep.read_text(encoding="utf-8"))
+        _items = _ed.get("experiences") or []
+        if not _items:
+            raise SystemExit(f"❌ {_ep} 里没有经验 ⇒ 重建出的 prompt 不是 v7")
+        exp_store = ExperienceStore.from_dict(_items)
+        print(f"  经验库（用于重建 prompt）：{len(exp_store)} 条，来自 {_ep}")
+
     client = ReplayClient(records_path=Path(args.replay), config=cfg,
                           strict=False)
     agent_cfg = AgentConfig(inst_id=args.inst, bar=args.bar,
                             template=args.template, n_samples=args.samples,
-                            temperature=0.2, kpi=kpi_cfg)
+                            temperature=0.2, kpi=kpi_cfg,
+                            exp_store=exp_store)
     llm = f"llm_{args.template}"
     factories = {llm: (lambda _c: lambda: TradingAgent(
         client=_c, config=agent_cfg, limits=RiskLimits()))(client)}
@@ -280,7 +298,12 @@ def main() -> int:
         step = max(1, rcfg.period)
         for i in range(step, len(recs) + 1, step):
             window = recs[max(0, i - step):i]
-            at_tick = int(window[-1].tick)
+            # ⚠️⚠️ **`at_tick` 必须是「窗口最后一根 + horizon」，不是最后一根。**
+            # 复盘用到的 outcome 延伸到 `last + horizon`，
+            # 若把经验记在 `last`，它们就会在 `last+1` 可见却"知道"到 `last+4`
+            # ⇒ **凭空多出 horizon−1 根前视**，而且不报错。
+            # （我第一版就写成了 `window[-1].tick`。）
+            at_tick = review_at_tick(window, horizon=args.horizon)
             # ⭐ 时间层边界：只用**严格更早**的经验
             exps = exp_store.retrieve(at_tick=at_tick,
                                       k=rcfg.max_experiences)

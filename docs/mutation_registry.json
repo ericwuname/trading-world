@@ -1,5 +1,5 @@
 {
-  "next_available": 111,
+  "next_available": 114,
   "history": [
     {
       "ids": [],
@@ -174,6 +174,15 @@
       ],
       "claimed_by": "A6-复盘归因与经验库",
       "claimed_at": "2026-09-21T21:26:33"
+    },
+    {
+      "ids": [
+        111,
+        112,
+        113
+      ],
+      "claimed_by": "A6-经验库前视守卫",
+      "claimed_at": "2026-09-21T22:12:24"
     }
   ],
   "note": "变异测试编号的权威来源。新增变异体前用 `python scripts/claim_mutation_ids.py --claim N --by <工作线>` 领取；next_available 的初值由 `--init` 从 mutation_check.py 实读推导，**不采用任何文档里预先写死的数字**。"
