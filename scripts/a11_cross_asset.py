@@ -258,6 +258,8 @@ def pooled_mc_calibration(*resids: list[float],
         m = sum(r) / len(r)
         groups.append([x - m for x in r])
     hit = 0
+    hit_t = 0
+    kk = len(groups)
     zs: list[float] = []
     for _ in range(reps):
         ests = []
@@ -276,7 +278,15 @@ def pooled_mc_calibration(*resids: list[float],
         zs.append(z)
         if abs(z) > 1.96:
             hit += 1
-    return {"reps": len(zs), "false_positive_rate": hit / len(zs) if zs else float("nan"),
+        # ⭐ 同时数**小 k 判据**（`t(df=k−1)`）的假阳性率 ——
+        # 因为最终下结论用的是它。**用来 certify 的判据必须自己也被 certify。**
+        if kk >= 2 and abs(z) > t_crit95(kk - 1):
+            hit_t += 1
+    return {"reps": len(zs),
+            "false_positive_rate": hit / len(zs) if zs else float("nan"),
+            "false_positive_rate_t": hit_t / len(zs) if zs else float("nan"),
+            "t_crit": t_crit95(kk - 1) if kk >= 2 else float("nan"),
+            "k": kk,
             "mean_z": (sum(zs) / len(zs)) if zs else float("nan"),
             "sd_z": ((sum((x - sum(zs) / len(zs)) ** 2 for x in zs)
                       / (len(zs) - 1)) ** 0.5) if len(zs) > 1 else float("nan"),
@@ -464,6 +474,15 @@ def main() -> int:
             print(f"  {cal['reps']} 次重采样：假阳性率 **{cal['false_positive_rate']:.1%}**"
                   f"（目标 5%）；z 的均值 {cal['mean_z']:+.3f}，标准差 {cal['sd_z']:.3f}"
                   f"（目标 1.000）")
+            print(f"  ⇒ ⭐ **我们真正用的判据**（`t(df={cal['k'] - 1})`，"
+                  f"临界 {cal['t_crit']:.2f}）的假阳性率："
+                  f"**{cal['false_positive_rate_t']:.1%}**（目标 5%）")
+            if cal["false_positive_rate_t"] > 0.08:
+                print("     ⚠️ **t 判据也偏大 ⇒ 「显著」要打折**")
+            elif cal["false_positive_rate_t"] > 0.02:
+                print("     ✅ t 判据标定良好 ⇒ 「显著」可信")
+            else:
+                print("     ⚠️ t 判据偏严（过于保守）")
             if cal["false_positive_rate"] > 0.08:
                 print("  ⚠️ **偏大 ⇒ 报告里的「显著」要打折**")
             elif cal["false_positive_rate"] < 0.02:

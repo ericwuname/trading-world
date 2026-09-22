@@ -317,5 +317,55 @@ class TestSignFlipPvalue(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class TestTCriterionIsAlsoCalibrated(unittest.TestCase):
+    """⭐⭐ **我们最终用的判据（`t(df=k−1)`）自己也必须被验。**
+
+    A12 教训：正态 z 是**反保守**的（δ=0 假阳性率实测 9.9%）。
+    所以本轮改用 `t(df=k−1)`——但**换了判据就得重新验它**，
+    否则只是把"没验过的判据"从正态换成了 t。
+    """
+
+    def _normal(self, n, sd, seed):
+        import random
+        rng = random.Random(seed)
+        return [rng.gauss(0, sd) for _ in range(n)]
+
+    def test_报出t判据的假阳性率(self):
+        g = [self._normal(300, 0.003, s) for s in (1, 2, 3, 4)]
+        cal = pooled_mc_calibration(*g, delta=0.0, reps=800, seed=5)
+        self.assertIn("false_positive_rate_t", cal)
+        self.assertIn("t_crit", cal)
+        self.assertEqual(cal["k"], 4)
+        self.assertAlmostEqual(cal["t_crit"], 3.182, places=3)
+
+    def test_t判据在这份数据上不比正态更松(self):
+        """⚠️ 核心性质：t 判据**不能**比正态更宽松（否则换它没意义）。"""
+        g = [self._normal(300, 0.003, s) for s in (11, 12, 13, 14)]
+        cal = pooled_mc_calibration(*g, delta=0.0, reps=2000, seed=6)
+        self.assertLessEqual(cal["false_positive_rate_t"] + 1e-9,
+                             cal["false_positive_rate"] + 0.02,
+                             "t 判据的假阳性率不该高于正态判据")
+
+    def test_正态样本下t判据假阳性率落在保守侧(self):
+        g = [self._normal(300, 0.003, s) for s in (21, 22, 23, 24)]
+        cal = pooled_mc_calibration(*g, delta=0.0, reps=3000, seed=7)
+        # 名义 5%，k=4 时 t 更严 ⇒ 实测应明显低于 5%
+        self.assertLess(cal["false_positive_rate_t"], 0.05)
+
+    def test_注入效应时t判据能检出(self):
+        """⚠️ 分辨力补强：不能"永远不显著"。
+
+        ⚠️ 我第一版把效应做进**残差**里（`gauss(0.004, ...)`）再传 `delta=0.0`
+        ——**错**：这个函数会**先把每组中心化**，效应会被消掉，
+        于是实测 0.0（看起来像"判不出来"）。
+        ⇒ 正确用法：传**零均值**残差 + 把效应放进 `delta`。
+        """
+        import random
+        rng = random.Random(9)
+        g = [[rng.gauss(0.0, 0.003) for _ in range(300)] for _ in range(4)]
+        cal = pooled_mc_calibration(*g, delta=0.004, reps=800, seed=10)
+        self.assertGreater(cal["false_positive_rate_t"], 0.9)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
