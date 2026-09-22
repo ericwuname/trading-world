@@ -1952,6 +1952,25 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M120',
+        'σ=0 被当成"输入不合法/信息不足"（`sd <= 0 ⇒ nan`）'
+        '——而 **σ=0 是信息最强的情形**：每段差值一模一样 ⇒ '
+        'se=0、t=±inf ⇒ 任意小的效应都判得出。'
+        '报成 nan/None 会被报告印成「**判不出来**」，**方向正好反了**。'
+        '⚠️ 同一个错 A6 在 `paired_verdict` 里修过一次，'
+        '但漏了 `min_detectable_effect` 与 `power_analysis` 两个兄弟函数；'
+        'A10 的标定测试才把它照出来。'
+        '⭐ 判据：**"最强证据"与"最弱证据"看起来一样（都是空/未定义）**，'
+        '所以必须专门测 σ=0 这一档',
+        [
+            (
+                'tw/segmented.py',
+                '    if sd != sd or sd < 0 or n_segs < 2:\n',
+                '    if sd != sd or sd <= 0 or n_segs < 2:\n',
+            ),
+        ],
+    ),
 ]
 
 

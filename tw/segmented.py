@@ -417,10 +417,17 @@ def power_analysis(effect: float, sd: float, *,
     # ⚠️ NaN 必须**显式**挡住：`nan == 0` 是 False，
     # 所以只写 `effect == 0` 会让 NaN 一路走到 `int(nan)` → ValueError。
     # （这不是理论问题——测试就是这么抓到的。）
-    if (sd is None or sd != sd or sd <= 0
+    # ⚠️ 同 `min_detectable_effect`：**`sd == 0` 不是"信息不足"，是"信息最强"**。
+    # 效应确定 ⇒ 最少 2 段就能判出来。返回 None 会被报告印成「判不出来」
+    # ⇒ **方向反了**。（只有 effect == 0 才是真的判不出来：0 效应在任何 n 下
+    # 都与噪声不可分。）
+    if (sd is None or sd != sd or sd < 0
             or effect is None or effect != effect or effect == 0):
         return {"required_segs": None, "required_n": None,
-                "note": "需要非零效应与非零标准差；先用小批量估 sd"}
+                "note": "需要非零效应与非负标准差；先用小批量估 sd"}
+    if sd == 0.0:
+        return {"required_segs": 2, "required_n": 2,
+                "note": "标准差为 0（效应完全一致）⇒ 最少 2 段即可判出"}
     z = (1.96 if alpha == 0.05 else 2.58) if power == 0.80 else 1.96
     zp = Z_POWER80 if power == 0.80 else 0.0
     n = max(2, int(math.ceil((z + zp) ** 2 * (sd ** 2) / (effect ** 2))) + 1)
@@ -459,11 +466,26 @@ def min_detectable_effect(sd: float, n_segs: int, *,
 
     ⭐ 用 ``t_crit95(K−1) + z_功效`` ⇒ 与 :func:`power_analysis`
     **互为逆运算**（有测试守住这个等式）。
+
+    ⚠️⚠️ **定义点是 80% 判力，不是 50%**：
+    公式里的 `z_功效 = 0.84` 就是为 80% 功效加的。
+    ⇒ 「δ = MDE」意味着**约 80% 的概率**判出来，不是一半。
+    想要 50% 判力对应的那个门槛，是 `t_crit95(K−1)·σ/√K`（少了功效项）。
+    （A10 的测试就是因为把这个搞混而先写错了一次。）
     ⚠️ 上一版写死了 `1.96+0.84`，在 df=1 时真实临界值是 12.71，
     于是它**高估了精度**（报出比实际小得多的 MDE）。
     """
-    if not (sd == sd) or sd <= 0 or n_segs < 2:
+    # ⚠️⚠️ **`sd == 0` 必须返回 0，不能返回 nan**（2026-09-22 修）。
+    # σ=0 = 每一段的差值**一模一样** = **最强的证据**：
+    # 此时任意小的效应都能判出来 ⇒ MDE = 0。
+    # 朴素写法 `sd <= 0 ⇒ nan` 会让报告把它印成「判不出来」——
+    # **方向正好相反**，而这正是 A6 在 `paired_verdict` 里修过的同一类错，
+    # 当时漏了这个兄弟函数（A10 的 σ=0 测试才把它照出来）。
+    # ⚠️ 只有**负的**或非数才是不合法的输入。
+    if sd != sd or sd < 0 or n_segs < 2:
         return float("nan")
+    if sd == 0.0:
+        return 0.0
     zp = Z_POWER80 if power == 0.80 else 0.0
     z = _t_alpha2(alpha, int(n_segs) - 1)
     return (z + zp) * sd / math.sqrt(n_segs)

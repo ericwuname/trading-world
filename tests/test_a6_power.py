@@ -105,9 +105,29 @@ class TestMdeAndPowerAreInverse(unittest.TestCase):
                            power_analysis(0.01, 0.01)["required_segs"])
 
     def test_退化输入返回None(self):
+        """⚠️ 真正的"退化"只有：**效应为 0**（任何 n 都分不开）或**非数**。"""
         self.assertIsNone(power_analysis(0.0, 0.01)["required_segs"])
-        self.assertIsNone(power_analysis(0.01, 0.0)["required_segs"])
         self.assertIsNone(power_analysis(0.01, float("nan"))["required_segs"])
+
+    def test_零标准差是最强证据而不是退化(self):
+        """⭐⭐ **σ = 0 是"信息最强"，不是"输入不合法"**（2026-09-22 修正）。
+
+        原来的断言是 `power_analysis(0.01, 0.0) is None` —— 那等于说
+        「效应完全一致时**判不出来**」，**方向正好反了**：
+        σ=0 时每段差值一模一样 ⇒ `paired_verdict` 给出 se=0、t=±inf
+        ⇒ **2 段就足以判出来**，而 MDE 应当是 **0**。
+
+        ⚠️ 同一个错 A6 在 `paired_verdict` 里修过一次（σ=0 被报成"无法判定"），
+        但漏了 `min_detectable_effect` 与 `power_analysis` 这两个兄弟函数；
+        A10 的标定测试才把它照出来。
+        """
+        self.assertEqual(power_analysis(0.01, 0.0)["required_segs"], 2)
+        self.assertEqual(min_detectable_effect(0.0, 48), 0.0)
+
+    def test_负标准差仍算非法(self):
+        """⚠️ 负的 σ 才是不合法输入（不是 0）。"""
+        self.assertIsNone(power_analysis(0.01, -0.01)["required_segs"])
+        self.assertTrue(math.isnan(min_detectable_effect(-0.01, 48)))
 
     def test_nan输入不崩(self):
         nan = float("nan")
