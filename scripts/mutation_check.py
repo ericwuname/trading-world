@@ -1971,6 +1971,23 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M121',
+        '引号修复工具**失去安全边界**：不再要求"这一行单独编译不过"'
+        '（`bad` 恒为 False ⇒ 好行也改）或不再校验改完能否编译。'
+        '⚠️ 后果不是语法错——而是**把本来正确的代码改坏**：'
+        '`" | ".join(...)` 里引号有句法意义，`"A" if x else "B"` 同理；'
+        '**两行拼接的续行**被当成新语句后还会吃掉首行的 `)`。'
+        '⭐ 判据：**会自动改写源码的工具，必须带上"只碰已知坏掉的东西"'
+        '与"改完自己编译一遍"两道闸**',
+        [
+            (
+                'scripts/fix_ascii_quotes.py',
+                '        if is_stmt and balanced and bad and not risky and not has_triple:',
+                '        if is_stmt and balanced and not risky and not has_triple:',
+            ),
+        ],
+    ),
 ]
 
 
