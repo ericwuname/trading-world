@@ -35,10 +35,13 @@ for _p in (Path(__file__).resolve().parent.parent,):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from tw.segmented import min_detectable_effect, paired_verdict  # noqa: E402
+from tw.segmented import (  # noqa: E402
+    min_detectable_effect, paired_verdict, t_crit95,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 A9, A11 = ROOT / "out" / "a9", ROOT / "out" / "a11"
+A12 = ROOT / "out" / "a12"
 OUTD = ROOT / "out" / "a11"
 
 #: 跨标的要用的 (标的, 处理臂产物, 处理键, 基准臂产物, 基准键)
@@ -54,6 +57,14 @@ RUNS: dict[str, dict[str, Any]] = {
         "k400": {
             "kpi": (A11 / "eval_v6_k400o0_ETH.json", "llm_v6"),
             "base": (A11 / "eval_v4_k400o0_ETH.json", "llm_v4"),
+        },
+    },
+    # ⭐ 第三个独立标的（A12）。n 取 250 是为了**一个配额窗口装得下两臂**
+    # （250 × 8 × 2 = 4,000 次）。SOL 可用 498 段 ⇒ 够。
+    "SOL": {
+        "k250": {
+            "kpi": (A12 / "eval_v6_k250o0_SOL.json", "llm_v6"),
+            "base": (A12 / "eval_v4_k250o0_SOL.json", "llm_v4"),
         },
     },
 }
@@ -173,9 +184,17 @@ def pool_instruments(items: list[tuple[str, dict[str, Any]]]
     df = len(xs) - 1
     crit = {1: 3.84, 2: 5.99, 3: 7.81, 4: 9.49}.get(df, float("nan"))
     se = math.sqrt(1.0 / sw)
+    # ⭐⭐⭐ **小 k 时必须用 `t(df=k−1)`，不是正态 1.96**
+    # 逆方差合并的口径来自 k 个组均值 ⇒ 自由度是 k−1。
+    # k=3 时 t_crit95(2)=4.30（而正态只有 1.96）⇒ 用 1.96 会把
+    # **本不显著的结果报成显著**。实测也印证：正态近似的 z
+    # 在 δ=0 时假阳性率高达 9.9%（见 `pooled_mc_calibration`）。
+    tcrit = t_crit95(df) if df >= 1 else float("nan")
     return {"k": len(xs), "pooled": th, "se": se, "Q": q, "df": df,
             "critical": crit, "heterogeneous": bool(crit == crit and q > crit),
             "z": th / se if se > 0 else float("nan"),
+            "t_crit": tcrit,
+            "ci_t": (th - tcrit * se, th + tcrit * se) if tcrit == tcrit else (float("nan"),) * 2,
             "ci": (th - 1.96 * se, th + 1.96 * se),
             "note": ("Q > 临界 ⇒ **各标的效应不一致** ⇒ 不能合并，要按标的报"
                      if (crit == crit and q > crit) else
@@ -206,7 +225,7 @@ def kpi_bite(nets: list[float], target_return: float) -> dict[str, Any]:
 
 
 # ⭐⭐⭐ 合并统计量的**标定自检**（在宣布"显著"之前必须先做）
-def pooled_mc_calibration(resid_a: list[float], resid_b: list[float], *,
+def pooled_mc_calibration(*resids: list[float],
                           delta: float = 0.0, reps: int = 4000,
                           seed: int = 20260922) -> dict[str, Any]:
     """把**已知真值 δ** 叠到两份真实残差上，看**合并后的 z** 标定得准不准。
@@ -216,11 +235,15 @@ def pooled_mc_calibration(resid_a: list[float], resid_b: list[float], *,
     A10 只验过**单个标的的 t 区间**。若合并的 z 本身偏大，
     那这个"显著"就是**装置造出来的**，不是数据里的。
     ⇒ 判据：**δ=0 时 |z|>1.96 的比例应当 ≈5%**（假阳性率）。
+
+    ⚠️ **要接任意个组**：我第一版写死了两个（`resid_a, resid_b`），
+    于是当标的变成 3 个时，**certify 的对象与它认证的统计量不是同一个**
+    ——那是最糟的一种"检查"。
     """
     import random
     rng = random.Random(seed)
     groups = []
-    for r in (resid_a, resid_b):
+    for r in resids:
         m = sum(r) / len(r)
         groups.append([x - m for x in r])
     hit = 0
@@ -249,6 +272,67 @@ def pooled_mc_calibration(resid_a: list[float], resid_b: list[float], *,
             "seed": seed}
 
 
+# ⭐⭐⭐ 不依赖正态近似的**随机化检验**（标定上可靠）
+def pooled_signflip_pvalue(*resids: list[float], reps: int = 4000,
+                           seed: int = 20260922) -> dict[str, Any]:
+    """用**组内符号翻转**造零分布，给出合并效应的**经验 p 值**。
+
+    ⚠️ 为什么必须另做一个：本函数的兄弟 `pooled_mc_calibration` 实测出
+    **逆方差合并的 z 是反保守的**（k=3 时假阳性率 **9.9%**、z 均值 +0.38）
+    —— 因为它用了**估计出来的权重**（`w=1/SE²`），而权重与估计值相关
+    ⇒ |z| 被抬高 ⇒ z=−2.83 **不等于** 5% 水平上的显著。
+
+    ⇒ 这里换成**随机化检验**：在每个标的**内部**独立翻转每个观测的符号，
+    重算合并 z，得到零分布。它对**残差分布对称**这一点是标定良好的，
+    不依赖正态近似、也不用估计权重带来的那一层偏差。
+
+    ⚠️ 前提：残差分布**关于 0 对称**。若严重偏斜，这个检验也会偏
+    （所以报告里同时给偏度，不藏）。
+    """
+    import random
+    rng = random.Random(seed)
+    # ⚠️⚠️ **不许中心化**！我第一版先按组中心化 ⇒ 每组均值恒为 0
+    # ⇒ 合并均值恒为 0 ⇒ 观测 |z| 算成 0.000、p 算成 1.0000。
+    # 零假设是"没有任何效应"，所以**观测值必须保留**，
+    # 靠"逐观测随机翻符号"去造零分布。
+    groups = [list(r) for r in resids]
+
+    def pooled_z(gs: list[list[float]]) -> float:
+        ests = []
+        for g in gs:
+            n = len(g)
+            if n < 2:
+                continue
+            mu = sum(g) / n
+            sd = (sum((x - mu) ** 2 for x in g) / (n - 1)) ** 0.5
+            if sd > 0:
+                ests.append((mu, sd / (n ** 0.5)))
+        if len(ests) < 2:
+            return float("nan")
+        w = [1.0 / (se ** 2) for _e, se in ests]
+        sw = sum(w)
+        th = sum(wi * e for wi, (e, _se) in zip(w, ests)) / sw
+        return th / ((1.0 / sw) ** 0.5)
+
+    z_obs = pooled_z(groups)
+    if z_obs != z_obs:
+        return {"z_obs": float("nan"), "p_value": float("nan"), "reps": 0,
+                "seed": seed}
+    hits = 0
+    for _ in range(reps):
+        flipped = [[x if rng.random() < 0.5 else -x for x in g]
+                   for g in groups]
+        if abs(pooled_z(flipped)) >= abs(z_obs):
+            hits += 1
+    # ⚠️ +1：观测本身也算一个可能的取值（避免 p=0 的假精确）
+    return {"z_obs": z_obs, "p_value": (hits + 1) / (reps + 1),
+            "reps": reps, "seed": seed,
+            "skew": [(sum((x - sum(g) / len(g)) ** 3 for x in g) / len(g))
+                     / (((sum((x - sum(g) / len(g)) ** 2 for x in g)
+                          / len(g)) ** 0.5) ** 3) if len(g) > 2 else float("nan")
+                     for g in groups]}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", default=str(OUTD / "cross_asset.json"))
@@ -263,7 +347,7 @@ def main() -> int:
     print("\n【前提检查 1】两个运行的 KPI 阈值必须逐字段相同")
     items: list[tuple[str, dict[str, Any]]] = []
     premise_ok = True
-    for inst in ("BTC", "ETH"):
+    for inst in RUNS:
         for tag, r in RUNS[inst].items():
             if not r:
                 print(f"  {inst} {tag}: （本轮未跑）")
@@ -296,7 +380,7 @@ def main() -> int:
         print("\n❌ **前提不成立 ⇒ 不许把两个标的合并/对比。**")
 
     print("\n【前提检查 2】段网格是否一致（同 offset ⇒ 同一组切法）")
-    for inst in ("BTC", "ETH"):
+    for inst in RUNS:
         for tag, r in RUNS[inst].items():
             if not r:
                 continue
@@ -343,8 +427,12 @@ def main() -> int:
     if pl["k"] >= 2:
         print(f"  标的数 k={pl['k']}  合并效应 {pl['pooled'] * 100:+.4f}%"
               f"（SE {pl['se'] * 100:.4f}%）")
-        print(f"  95% 区间 [{pl['ci'][0] * 100:+.4f}%, {pl['ci'][1] * 100:+.4f}%]"
-              f"  z={pl['z']:+.2f}")
+        print(f"  ⚠️ 正态近似区间 [{pl['ci'][0] * 100:+.4f}%, "
+              f"{pl['ci'][1] * 100:+.4f}%]  z={pl['z']:+.2f}"
+              f"（**已知反保守**，别用它下结论）")
+        print(f"  ⭐ 小 k 正确区间（t, df={pl['df']}, 临界 {pl['t_crit']:.2f}）"
+              f"：[{pl['ci_t'][0] * 100:+.4f}%, {pl['ci_t'][1] * 100:+.4f}%]"
+              f" ⇒ {'不跨 0 ⇒ 显著' if (pl['ci_t'][0] > 0 or pl['ci_t'][1] < 0) else '**跨 0 ⇒ 不能算显著**'}")
         print(f"  Q={pl['Q']:.2f}, df={pl['df']}, 临界={pl['critical']:.2f}"
               f"  → {'⚠️ **异质**（不能合并）' if pl['heterogeneous'] else '同质（可合并）'}")
         # ⚠️ 合并后的 MDE：用**合并 SE** 反推等效 σ，再按总段数算。
@@ -360,7 +448,7 @@ def main() -> int:
     if len(items) >= 2:
         res = [_d for _nm, si in items for _d in [si.get("diffs") or []]]
         if all(len(x) > 8 for x in res):
-            cal = pooled_mc_calibration(res[0], res[1], delta=0.0)
+            cal = pooled_mc_calibration(*res, delta=0.0)
             print("\n【标定自检】合并统计量在 δ=0 时的**假阳性率**")
             print(f"  {cal['reps']} 次重采样：假阳性率 **{cal['false_positive_rate']:.1%}**"
                   f"（目标 5%）；z 的均值 {cal['mean_z']:+.3f}，标准差 {cal['sd_z']:.3f}"
@@ -372,10 +460,23 @@ def main() -> int:
             else:
                 print("  ✅ 标定良好 ⇒ 合并后的「显著」是可信的")
             results_cal = cal
+            # ⭐ 不依赖正态近似的那个（标定更可靠）
+            sf = pooled_signflip_pvalue(*res)
+            print("\n【随机化检验】组内符号翻转（不依赖正态近似）")
+            print(f"  观测 |z| = {abs(sf['z_obs']):.3f}，"
+                  f"经验 **p = {sf['p_value']:.4f}**（{sf['reps']} 次重采样）")
+            sk = [x for x in (sf.get("skew") or []) if x == x]
+            if sk:
+                print("  各标的残差的偏度：" + "  ".join(f"{x:+.3f}" for x in sk)
+                      + "（越接近 0 越满足「对称」前提）")
+            print(f"  ⇒ {'**p<0.05 ⇒ 显著（且不依赖正态近似）**' if sf['p_value'] < 0.05 else '**p≥0.05 ⇒ 不能算显著**'}")
+            results_signflip = sf
         else:
             results_cal = {}
+            results_signflip = {}
     else:
         results_cal = {}
+        results_signflip = {}
 
     outp = Path(args.json)
     outp.parent.mkdir(parents=True, exist_ok=True)
@@ -384,7 +485,8 @@ def main() -> int:
          "per_instrument": [{"name": nm, **{k: v for k, v in s.items()
                                            if k != "diffs"}} for nm, s in items],
          "pooled": pl, "kpi_bite": results_pilot,
-         "pooled_calibration": results_cal},
+         "pooled_calibration": results_cal,
+         "pooled_signflip": results_signflip},
         ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nJSON → {outp}")
     return 0

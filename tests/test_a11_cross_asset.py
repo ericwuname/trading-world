@@ -25,7 +25,8 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.append(str(ROOT / "scripts"))
 
 from scripts.a11_cross_asset import (  # noqa: E402
-    check_same_instructions, pool_instruments, pooled_mc_calibration, stat,
+    check_same_instructions, pool_instruments, pooled_mc_calibration,
+    pooled_signflip_pvalue, stat,
 )
 
 KPI_A = {"target_return": -0.00022384643115001381,
@@ -219,6 +220,101 @@ class TestPooledStatisticIsCalibrated(unittest.TestCase):
         """σ=0 的极端输入不许抛（本项目对 σ=0 有专门的教训）。"""
         cal = pooled_mc_calibration([0.0] * 50, [0.0] * 50, reps=20, seed=3)
         self.assertEqual(cal["reps"], 0)     # 全部被"se>0"挡掉 ⇒ 分母为空
+
+
+class TestSmallKInterval(unittest.TestCase):
+    """⭐⭐ **小 k 的合并区间必须用 `t(df=k−1)`，不是正态 1.96**。
+
+    本项目的"显著"结论第一次出现在 k=3 的合并上。用 1.96 会把它报成显著
+    （z=−2.83 > 1.96），但正确临界是 `t(df=2)=4.30` ⇒ **不显著**。
+    实测也印证：正态近似的 z 在 δ=0 时假阳性率约 **9.9%**（反保守）。
+    """
+
+    def _s(self, eff, se, n=300):
+        return {"n": n, "effect": eff, "se": se, "sd": se * (n ** 0.5),
+                "mde": 2.86 * se, "lo": eff - 2 * se, "hi": eff + 2 * se,
+                "t": (eff / se) if se > 0 else float("nan"),
+                "verdict": "依然无法判定", "diffs": []}
+
+    def test_k等于3时临界值约4点3(self):
+        pl = pool_instruments([("BTC", self._s(-0.0035, 0.0012)),
+                              ("ETH", self._s(-0.0035, 0.0012)),
+                              ("SOL", self._s(-0.0035, 0.0012))])
+        self.assertEqual(pl["df"], 2)
+        self.assertAlmostEqual(pl["t_crit"], 4.303, places=2)
+
+    def test_用t口径时窄区间会变成不显著(self):
+        """|z|≈2.9 的效应：正态说显著，`t(df=2)` 说不显著——**后者才对**。"""
+        # ⚠️ 参数要**调到能体现对比**：每组 se=0.001*√3 ⇒ 合并 se=0.001
+        # ⇒ z = −0.0028/0.001 = −2.8（>1.96 但 < 4.30）。
+        # 我第一版随手写了 −0.0035/0.0012 ⇒ 合并 |z|≈5 ⇒ 两个口径都显著，
+        # **对比根本没出现**（那测试就白写了）。
+        se_g = 0.001 * (3 ** 0.5)
+        pl = pool_instruments([("BTC", self._s(-0.0028, se_g)),
+                              ("ETH", self._s(-0.0028, se_g)),
+                              ("SOL", self._s(-0.0028, se_g))])
+        self.assertGreater(abs(pl["z"]), 1.96)      # 正态口径 ⇒ 显著
+        self.assertLess(pl["ci"][1], 0)             # 正态区间不含 0
+        # t 口径（临界 4.30）⇒ 区间更宽且**跨 0**
+        self.assertLess(pl["ci_t"][0], pl["ci"][0])
+        self.assertGreater(pl["ci_t"][1], pl["ci"][1])
+        self.assertTrue(pl["ci_t"][0] < 0 < pl["ci_t"][1])   # 跨 0 ⇒ 不显著
+
+    def test_k等于2时临界值约12点7(self):
+        pl = pool_instruments([("BTC", self._s(-0.0035, 0.0012)),
+                              ("ETH", self._s(-0.0035, 0.0012))])
+        self.assertEqual(pl["df"], 1)
+        self.assertAlmostEqual(pl["t_crit"], 12.706, places=2)
+
+
+class TestSignFlipPvalue(unittest.TestCase):
+    """随机化检验（不依赖正态近似）——⚠️ 它自己也有前提，要一并测出来。"""
+
+    def _normal(self, n, sd, seed):
+        import random
+        rng = random.Random(seed)
+        return [rng.gauss(0, sd) for _ in range(n)]
+
+    def test_delta为零时p值不小(self):
+        g = [self._normal(300, 0.003, 1), self._normal(300, 0.003, 2)]
+        sf = pooled_signflip_pvalue(*g, reps=1000, seed=11)
+        self.assertGreater(sf["p_value"], 0.2, "无效应时不该频繁报小 p")
+
+    def test_注入大效应时p值很小(self):
+        import random
+        rng = random.Random(3)
+        g = [[rng.gauss(0.01, 0.003) for _ in range(300)] for _ in range(2)]
+        sf = pooled_signflip_pvalue(*g, reps=1000, seed=12)
+        self.assertLess(sf["p_value"], 0.01)
+
+    def test_观测z必须非零(self):
+        """⚠️⚠️ 我第一版**先按组中心化** ⇒ 观测 z 恒为 0、p 恒为 1。
+        零假设是"没有效应"，所以**观测值必须保留**。"""
+        import random
+        rng = random.Random(5)
+        g = [[rng.gauss(0.004, 0.002) for _ in range(200)] for _ in range(3)]
+        sf = pooled_signflip_pvalue(*g, reps=200, seed=13)
+        # ⚠️ 这条的**要点只是"不为 0"**（我第一版断言 |z|<10，那是随手猜的：
+        # 注入的效应远大于噪声时 z 本来就可以是 50）。
+        self.assertNotAlmostEqual(sf["z_obs"], 0.0, places=6)
+        self.assertEqual(sf["z_obs"] == sf["z_obs"], True)   # 不是 nan
+
+    def test_报出偏度_不许藏(self):
+        """⚠️ 对称性是它的前提 ⇒ 偏度必须报出来（SOL 的实测偏度 −12.9）。"""
+        import random
+        rng = random.Random(7)
+        g = [[rng.gauss(0, 0.002) for _ in range(200)]]
+        g.append([rng.gauss(0, 0.002) for _ in range(200)])
+        sf = pooled_signflip_pvalue(*g, reps=100, seed=14)
+        self.assertEqual(len(sf["skew"]), 2)
+        for x in sf["skew"]:
+            self.assertTrue(abs(x) < 1.0, f"正态样本的偏度不该这么大：{x}")
+
+    def test_固定种子可复现(self):
+        g = [self._normal(100, 0.003, 21), self._normal(100, 0.003, 22)]
+        a = pooled_signflip_pvalue(*g, reps=200, seed=77)
+        b = pooled_signflip_pvalue(*g, reps=200, seed=77)
+        self.assertEqual(a, b)
 
 
 if __name__ == "__main__":

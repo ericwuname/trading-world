@@ -57,13 +57,20 @@ def _f(x: Any, n: int = 2) -> str:
     return f"{float(x):.{n}f}"
 
 
+def _bp(x: Any, n: int = 2) -> str:
+    """以 bp（万分之一）显示 —— 本项目的效应都在 bp 量级。"""
+    if x is None or x != x:
+        return "—"
+    return f"{float(x) * 10000:+.{n}f}bp"
+
+
 def _collect() -> tuple[list[tuple[str, dict]], list[tuple[str, str, list]],
                         dict]:
     """跑一遍收集：逐标的统计 + 前提状态 + 钉死的阈值。"""
     btc_kpi = RUNS["BTC"]["k300"]["kpi"][0]
     items: list[tuple[str, dict]] = []
     premise: list[tuple[str, str, list]] = []
-    for inst in ("BTC", "ETH"):
+    for inst in RUNS:
         for tag, r in RUNS[inst].items():
             if not r:
                 continue
@@ -102,34 +109,47 @@ def build() -> str:
     L.append("|---|---|")
     L.append("| 为什么换标的而不是加段数 | 见 §1：加段数要 770 段 = 12,320 次，"
              "**超过一个配额窗口** |")
-    L.append("| 两个标的收到同一份指令吗 | 见 §2：**前提检查**（含「待跑」与"
+    L.append("| 各标的收到同一份指令吗 | 见 §2：**前提检查**（含「待跑」与"
              "「前提被违反」的区分）|")
-    L.append("| 那套阈值在 ETH 上有约束力吗 | 见 §2.1：**预检**——若基线本来就大量"
+    L.append("| 那套阈值在其他标的上也有约束力吗 | 见 §2.1：**预检**——若基线本来就大量"
              "达标，复现会**缺乏约束力** |")
     if len(items) >= 2:
         pl = pool_instruments(items)
+        _res0 = [s0.get("diffs") or [] for _n0, s0 in items]
+        fpr0 = float("nan")
+        if all(len(x) > 8 for x in _res0):
+            from scripts.a11_cross_asset import pooled_mc_calibration as _mc
+            fpr0 = _mc(*_res0, delta=0.0)["false_positive_rate"]
         e0, e1 = items[0][1]["effect"], items[1][1]["effect"]
         same_sign = (e0 * e1) > 0
-        L.append(f"| **效应复现了吗** | ✅ **同号且量级几乎相同**："
-                 f"{items[0][0]} {_pct(e0)}、{items[1][0]} {_pct(e1)} |")
-        L.append(f"| **两个标的能合并吗** | Q={_f(pl['Q'])} vs 临界 "
-                 f"{_f(pl.get('critical'))} ⇒ "
+        _all = "、".join(f"{nm0} {_bp(s0['effect'])}" for nm0, s0 in items)
+        L.append(f"| **效应复现了吗** | ✅ **同号且量级几乎相同**：{_all} |")
+        L.append(f"| **各标的能合并吗** | Q={_f(pl['Q'])}（df={pl['df']}）vs "
+                 f"临界 {_f(pl.get('critical'))} ⇒ "
                  f"**{'异质（只能按标的报）' if pl['heterogeneous'] else '同质 ⇒ 可以合并'}** |")
-        L.append(f"| **合并后判得出来吗** | **{_pct(pl['pooled'])}**，"
-                 f"95% 区间 [{_pct(pl['ci'][0])}, {_pct(pl['ci'][1])}]，"
-                 f"z={_f(pl['z'])} ⇒ "
-                 f"**{'区间不跨 0 ⇒ 达到显著' if (pl['ci'][0] > 0 or pl['ci'][1] < 0) else '区间跨 0 ⇒ 仍无法判定'}** |")
+        sigt = (pl.get("ci_t") and (pl["ci_t"][0] > 0 or pl["ci_t"][1] < 0))
+        L.append(f"| **合并效应是多少** | **{_bp(pl['pooled'])}**"
+                 f"（{pl['k']} 个标的，Q={_f(pl['Q'])} ⇒ 同质）|")
+        L.append(f"| **算不算「显著」** | ⚠️ **取决于口径**（见 §3.2b）："
+                 f"正态近似 z={_f(pl['z'])} 说显著，但它实测**反保守**"
+                 f"（δ=0 假阳性率 {_f(fpr0 * 100, 1)}%）；"
+                 f"按可外推的 `t(df={pl['df']})` 口径 "
+                 f"**[{_pct(pl['ci_t'][0])}, {_pct(pl['ci_t'][1])}]** ⇒ "
+                 f"**{'显著' if sigt else '仍不显著'}** |")
         L.append("")
         if same_sign and not pl["heterogeneous"] and (pl["ci"][0] > 0 or pl["ci"][1] < 0):
-            L.append("⭐⭐ **本轮唯一一个「收益侧」达到显著的结果**：")
-            L.append("单个标的都判不出来（区间跨 0），但**两个独立标的合并后**"
-                     "区间不跨 0。")
+            L.append("⭐⭐ **跨标的同向复现是强证据**：三个独立标的的效应"
+                     "**同号且量级几乎相同**，Q 检验**同质**。")
             L.append("")
-            L.append("⚠️ 但必须连着说清三件事：")
+            L.append("⚠️ 但**「算不算显著」必须按口径说清**（见 §3.2b）：")
+            L.append("正态近似说显著、但它**实测反保守**（δ=0 假阳性率约 10%）；"
+                     "按可外推的 `t(df=k−1)` 口径**还没到显著**。")
+            L.append("")
+            L.append("⚠️ 另外三件事也必须连着说：")
             L.append("")
             L.append("1. **效应很小**（约 3.4bp / 8 根一段）——它不是「能赚钱」的量级，"
                      "而是「可测量的差别」的量级；")
-            L.append("2. **合并的显著性离边界不远**（z≈−2.7）；"
+            L.append(f"2. **显著性离边界不远**（正态 z≈{_f(pl['z'])}，而按可外推口径本就不显著）；"
                      "且「独立」是**近似**的（同属加密资产、共享同样的模板与阈值）；")
             L.append("3. **这只是 offset=0 这一组窗口**。A9 已证明换一组窗口结论会变，"
                      "所以这不能写成「KPI 一定让收益变差」。")
@@ -159,7 +179,7 @@ def build() -> str:
     L.append("")
 
     # ---- 2 ----
-    L.append("## 2. ⭐⭐ 前提检查：两个标的必须拿到**同一份指令**")
+    L.append("## 2. ⭐⭐ 前提检查：各标的必须拿到**同一份指令**")
     L.append("")
     L.append("⚠️ 这条不是「顺手看一眼」，而是**整个比较成立的前提**：")
     L.append("`--calibrate-kpi` 会让每个标的用**它自己标定的阈值**，")
@@ -206,7 +226,7 @@ def build() -> str:
     thr = kpi.get("target_return")
     rates: list[float] = []
     if thr is not None:
-        for inst in ("BTC", "ETH"):
+        for inst in RUNS:
             for tag, r in RUNS[inst].items():
                 if not r:
                     continue
@@ -266,6 +286,39 @@ def build() -> str:
             L.append(f"- **Q = {_f(pl['Q'])}**，df={pl['df']}，"
                      f"临界 {_f(pl.get('critical'))} ⇒ **{het}**")
             L.append("")
+            if pl.get("t_crit") == pl.get("t_crit"):
+                L.append(f"- ⚠️ **小 k 的正确区间**（`t(df={pl['df']})`，"
+                         f"临界 **{_f(pl['t_crit'])}**，而非正态 1.96）："
+                         f"**[{_pct(pl['ci_t'][0])}, {_pct(pl['ci_t'][1])}]**")
+                sigt = pl["ci_t"][0] > 0 or pl["ci_t"][1] < 0
+                L.append(f"  ⇒ {'不跨 0' if sigt else '**跨 0 ⇒ 按这个口径不能算显著**'}")
+                L.append("")
+            L.append("### 3.2b ⚠️⚠️ 三个检验给出**不同答案**——必须讲清楚，不能挑一个")
+            L.append("")
+            L.append("| 检验 | 结果 | 它回答的问题 | 能不能用 |")
+            L.append("|---|---|---|---|")
+            L.append("| 正态近似 z | 区间不含 0 ⇒ 显著 | 这 3 个标的上的效应 | "
+                     "❌ **反保守**：δ=0 时假阳性率实测 **9.9%**（见下行） |")
+            L.append(f"| `t(df={pl['df']})` 区间 | "
+                     f"[{_pct(pl['ci_t'][0])}, {_pct(pl['ci_t'][1])}] ⇒ "
+                     f"{'显著' if (pl['ci_t'][0] > 0 or pl['ci_t'][1] < 0) else '**不显著**'} | "
+                     "**能不能推广到别的标的** | ✅ 保守且可外推（但 k=3 ⇒ 极宽） |")
+            L.append("| 组内符号翻转 | p 见 §3.2 下方 | 这 3 个标的上的效应 | "
+                     "⚠️ 前提是**残差对称**，而实测偏度可达 −12.9 ⇒ **可疑** |")
+            L.append("")
+            L.append("⭐⭐ **诚实的处理**：这两个口径回答的是**不同的推广问题**，")
+            L.append("**都要报**：")
+            L.append("")
+            L.append("- **标的级（能外推到别的资产）** ⇒ 用 `t(df=k−1)` ⇒ "
+                     "**尚未达到显著**；")
+            L.append("- **段级（只在这 3 个标的上）** ⇒ 符号翻转 p 很小，")
+            L.append("  但那个检验的**对称前提被 SOL 的偏度破坏** ⇒ **不能当铁证**。")
+            L.append("")
+            L.append("⇒ 所以本轮的稳妥表述是：")
+            L.append("**「三个独立标的**同向、量级一致**（−3.5bp，Q 检验同质）」"
+                     "——这是强证据；**但「合并后显著」取决于你把什么当可交换单位**，"
+                     "按更能外推的口径**还没有达到显著**。」")
+            L.append("")
             L.append("⚠️ **合并也要看方向一致性**：若两个标的**符号相反**，"
                      "合并出来的接近 0 是**两个相反效应的抵消**，不是「没有效应」——"
                      "这两件事必须分开说。")
@@ -280,8 +333,10 @@ def build() -> str:
             from scripts.a11_cross_asset import pooled_mc_calibration
             res = [s0.get("diffs") or [] for _n0, s0 in items]
             if all(len(x) > 8 for x in res):
-                cal = pooled_mc_calibration(res[0], res[1], delta=0.0)
-                L.append(f"做法：把 **δ=0** 叠到两份真实残差上重采样 "
+                # ⚠️ 必须把**全部**标的传进去：certify 的对象要与被认证的统计量一致。
+                # 我第一版写死 `res[0], res[1]` ⇒ 加第三个标的后它仍在验两个。
+                cal = pooled_mc_calibration(*res, delta=0.0)
+                L.append(f"做法：把 **δ=0** 叠到**各标的**的真实残差上重采样 "
                          f"**{cal['reps']}** 次（种子 {cal['seed']}），看合并 z：")
                 L.append("")
                 L.append("| 指标 | 实测 | 目标 |")
@@ -295,9 +350,28 @@ def build() -> str:
                     L.append("⚠️ **偏大 ⇒ 报告里的「显著」要打折。**")
                 elif fpr < 0.02:
                     L.append("⚠️ 偏小 ⇒ 合并区间**偏宽**（过于保守）。")
+                elif fpr > 8:
+                    L.append("")
                 else:
-                    L.append("✅ **标定良好** ⇒ 合并后的「显著」是**可信的**："
-                             "它来自数据，不是装置造出来的。")
+                    L.append("⚠️ **偏大 ⇒ 正态近似的「显著」要打折**：")
+                    L.append("这正说明**不能拿 1.96 当临界值**——用 `t(df=k−1)` 才是"
+                             "对的口径（见 §3.1）。")
+                L.append("")
+                # ⭐ 不依赖正态近似的随机化检验
+                from scripts.a11_cross_asset import pooled_signflip_pvalue
+                sf = pooled_signflip_pvalue(*res)
+                L.append(f"**随机化检验（组内符号翻转，不依赖正态近似）**："
+                         f"经验 **p = {sf['p_value']:.4f}**"
+                         f"（{sf['reps']} 次重采样，种子 {sf['seed']}）")
+                L.append("")
+                sk = [x for x in (sf.get("skew") or []) if x == x]
+                if sk:
+                    L.append("⚠️ 它的前提是**残差关于 0 对称**。实测各标的的偏度："
+                             + "、".join(f"**{x:+.2f}**" for x in sk)
+                             + f" ⇒ "
+                             + ("**偏差很大 ⇒ 这个 p 值只作参考，不能当铁证**"
+                                if max(abs(x) for x in sk) > 2 else
+                                "未超 2 ⇒ 前提大致成立"))
                 L.append("")
             else:
                 L.append("（残差不足，跳过。）")

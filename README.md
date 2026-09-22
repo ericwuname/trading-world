@@ -108,7 +108,7 @@ $PY scripts/lab.py                 # 全量：策略 × 5 场景 × 4 种子
 
 # ── 内核可信度 ──
 $PY -m unittest discover -s tests -t .   # 全量测试（一期 + 二期 + A1~A6）
-$PY scripts/mutation_check.py            # 122 项注入 bug，必须全部被抓到
+$PY scripts/mutation_check.py            # 123 项注入 bug，必须全部被抓到
 $PY scripts/selfcheck.py                 # 交付物自检：报告数字 vs out/*.json
 
 # ── LLM 交易 Agent（A6：多段配对实验 + 复盘闭环）──
@@ -146,6 +146,9 @@ $PY scripts/make_a10_report.py            # → docs/A10-判力实测标定报�
 $PY scripts/a11_cross_asset.py            # 前提检查 + 逐标的 + 合并/异质性
 $PY scripts/make_a11_report.py            # → docs/A11-跨标的复现报告.md
 $PY scripts/fix_ascii_quotes.py scripts/xxx.py --write   # 修中文里的裸引号
+
+# ── A12：三标的复现 + 全局复盘（收官）──
+$PY scripts/make_a12_synthesis.py         # → docs/A12-三标的复现与全局复盘.md
 
 # v7 = v4 + 「过去复盘得到的经验」（经验库的对照实验）
 $PY scripts/agent_review.py --replay ... --llm-review     # 生成经验库（回放，只花复盘的钱）
@@ -744,7 +747,7 @@ gui/            ⭐  桌面端
   desktop.py         pywebview 窗口，失败自动退回浏览器
   static/index.html  单文件前端（零外部依赖，图表手写 canvas）
 
-tests/              1585 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
+tests/              1593 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
                     + 数据层与 MCP + A1 订单模型与账户 + A2 留痕与风控 + A3 LLM 接入
                     + A4 执行与评估 + A5 GUI 集成 + A6 多段配对度量 / 结果回填 / KPI / 复盘归因与经验库）
                     ↑ 这个数字由 `scripts/selfcheck.py` 的 ③b 项与
@@ -817,7 +820,7 @@ scripts/
   bench_market.py   ⭐  内核性能与**等价性**基准：注入点带/不带某段计算，
                         既比墙钟，也比逐点行情是否完全一致
                         （只测速度不测等价 = 用"看起来差不多"换性能）
-  mutation_check.py     变异验证：122 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57 + 数据层与MCP M58~M63 + 订单模型与账户 M64~M71 + 留痕与风控 M72~M77 + LLM 接入 M78~M84 + 执行与评估 M85~M92 + GUI与互操作 M93~M96 + 多段度量 M97~M100 + KPI与回填 M101~M103 + 复盘归因与经验库 M104~M110 + 经验库前视守卫 M111~M113 + condition 类型容错 M114 + 收益目标窗口标定 M115 + 分段偏移守卫 M116 + 静态检查用 compile M117 + 异质性临界值 M118 + 调用失败率守卫 M119 + σ=0 最强证据 M120 + 引号工具安全边界 M121 + 合并统计量标定 M122）
+  mutation_check.py     变异验证：123 项注入 bug（一期 M1~M15 + 二期 M16~M33 + 三线深挖 M34~M43 + 分辨力危机 M44~M50 + 回填 M51~M54 + 一致性审计 M55~M57 + 数据层与MCP M58~M63 + 订单模型与账户 M64~M71 + 留痕与风控 M72~M77 + LLM 接入 M78~M84 + 执行与评估 M85~M92 + GUI与互操作 M93~M96 + 多段度量 M97~M100 + KPI与回填 M101~M103 + 复盘归因与经验库 M104~M110 + 经验库前视守卫 M111~M113 + condition 类型容错 M114 + 收益目标窗口标定 M115 + 分段偏移守卫 M116 + 静态检查用 compile M117 + 异质性临界值 M118 + 调用失败率守卫 M119 + σ=0 最强证据 M120 + 引号工具安全边界 M121 + 合并统计量标定 M122 + 小 k 用 t 不用正态 M123）
                         ↑ 这个数字由 selfcheck 的 ③c 项与 mutation_check.py 里
                         实际注册的编号对账
                         `--only M40` 只跑指定变异体（新增变异体**必须**单独跑一次——

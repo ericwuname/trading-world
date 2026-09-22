@@ -1,5 +1,5 @@
 {
-  "next_available": 123,
+  "next_available": 124,
   "history": [
     {
       "ids": [],
@@ -246,6 +246,13 @@
       ],
       "claimed_by": "A11-合并统计量标定",
       "claimed_at": "2026-09-22T22:00:53"
+    },
+    {
+      "ids": [
+        123
+      ],
+      "claimed_by": "A12-小k合并要用t",
+      "claimed_at": "2026-09-23T00:49:20"
     }
   ],
   "note": "变异测试编号的权威来源。新增变异体前用 `python scripts/claim_mutation_ids.py --claim N --by <工作线>` 领取；next_available 的初值由 `--init` 从 mutation_check.py 实读推导，**不采用任何文档里预先写死的数字**。"
