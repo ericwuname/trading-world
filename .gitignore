@@ -38,3 +38,8 @@ secrets/
 *.key
 *_key.txt
 credentials.json
+
+# ⚠️ **项目内的 `.workbuddy/`（环境状态：记忆 / automation 缓存）不进仓库**
+# 仓库是 public；记忆内容还会随时间长，不该混进版本历史。
+# （上面那条只覆盖**用户级**的 `~/.workbuddy/`，不覆盖项目内这份。）
+.workbuddy/

@@ -32,7 +32,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from scripts._cache import (  # noqa: E402
     Cache,

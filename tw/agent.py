@@ -76,6 +76,7 @@ def visible_from_series(
     spread_bp: float | None = None,
     best_bid: float | None = None,
     best_ask: float | None = None,
+    feature_shift: int = 0,
     **extra: Any,
 ) -> dict[str, Any]:
     """从 K 线序列 + 账户状态构造可见状态。
@@ -104,6 +105,17 @@ def visible_from_series(
     lo = max(0, i - int(n_closes) + 1)
     rc = [float(x) for x in closes[lo:i + 1]]
     mid = float(closes[i])
+    # ⭐ **B 臂（错位指标）**：同一根数、**同一个格式化器**，
+    # 只是把窗口整体往前挪 `feature_shift` 根 ⇒ 信息过期、格式不变。
+    # ⚠️ 它与 `recent_closes` 一起进 visible_state：**模型确实看到了它**，
+    # 所以它就该被留痕；也正因如此，回放能逐字节重建（不需要第二套口径）。
+    shifted: list[float] | None = None
+    if int(feature_shift) > 0:
+        hi_s = i - int(feature_shift)
+        lo_s = max(0, hi_s - int(n_closes) + 1)
+        shifted = [float(x) for x in closes[lo_s:hi_s + 1]]
+        if hi_s < 0:
+            shifted = []
     return build_visible_state(
         mid=mid,
         mark=float(mark) if mark is not None else mid,
@@ -116,6 +128,7 @@ def visible_from_series(
         margin_ratio=margin_ratio,
         funding_rate=funding_rate,
         recent_closes=rc,
+        **({"feature_closes": shifted} if shifted is not None else {}),
         **extra,
     )
 
@@ -167,10 +180,26 @@ class AgentConfig:
     exp_store: Any = None
     #: 每次决策最多取几条经验进 prompt（默认 5；与 `ReviewConfig` 的默认一致）。
     n_experiences: int = 5
+    #: ⭐ **三臂消融的变量**（A6 §6）：``real`` / ``shifted`` / ``none``。
+    #: - ``real``   = 用当前窗口算指标（A 臂）
+    #: - ``shifted``= 用更早一段窗口算（B 臂）——格式长度相同、信息过期
+    #: - ``none``   = 不提供指标（C 臂）
+    #: ⇒ ``A−B`` = 指标的信息价值；``B−C`` = 纯引导效应。**两个问题要分开。**
+    features_mode: str = "real"
+    #: ``features_mode="shifted"`` 时窗口往前挪几根（默认 12 = 一整段 `n_closes`）。
+    features_shift: int = 0
 
     def __post_init__(self) -> None:
         if self.n_samples < 1:
             raise ValueError(f"n_samples 必须 >= 1，收到 {self.n_samples}")
+        if self.features_mode not in ("real", "shifted", "none"):
+            raise ValueError(
+                f"features_mode 只能是 real/shifted/none，收到 "
+                f"{self.features_mode!r}")
+        if self.features_mode == "shifted" and self.features_shift <= 0:
+            raise ValueError(
+                "features_mode='shifted' 时必须给 features_shift > 0"
+                "——否则 B 臂与 A 臂**完全一样**，消融会静默变成空转。")
         if self.n_samples > 1 and self.temperature <= 0.0:
             raise ValueError(
                 "n_samples > 1 时 temperature 不能为 0："
@@ -312,6 +341,8 @@ class TradingAgent:
                 kpi=cfg.kpi,
                 kpi_state=kpi_state,
                 experiences=_exps,
+                feature_closes=visible.get("feature_closes"),
+                features_mode=cfg.features_mode,
             )
             # ---- ③ 采样 ---------------------------------------------
             raws, parsed_list, latency_ms = self._sample(messages)
@@ -443,6 +474,12 @@ class TradingAgent:
                 from .reflect import exp_lines as _el
                 _sig = _h.sha256(_el(_exps).encode("utf-8")).hexdigest()[:6]
                 prompt_label = f"{prompt_label}#exp{_sig}"
+            if cfg.features_mode != "real" or cfg.features_shift:
+                # ⚠️ 同 KPI/经验的道理：**换了臂 = 换了实验** ⇒ 必须换 ID，
+                # 否则「A 臂」与「B 臂」在同一 run/tick 下算出同一个 decision_id，
+                # 而两者的 prompt 不同 ⇒ 留痕里两条"长得一样"、归因失效。
+                prompt_label = (f"{prompt_label}#feat{cfg.features_mode}"
+                                f"{cfg.features_shift}")
             # 模型名从**客户端配置**现取，不在配置里存第二份——
             # 两处存同一个东西，迟早会不一致，而留痕里"到底用了哪个模型"
             # 正是 A/B 归因的依据。
@@ -474,6 +511,9 @@ class TradingAgent:
                                    if cfg.exp_store is not None else None),
                 "n_experiences": (cfg.n_experiences
                                   if cfg.exp_store is not None else None),
+                "features_mode": cfg.features_mode,
+                "features_shift": (cfg.features_shift
+                                   if cfg.features_mode == "shifted" else 0),
             },
             tool_calls=[],
             # ⚠️ 非空即表示"可能有外部信息进来"；回放模式下必须为空

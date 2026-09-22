@@ -19,8 +19,11 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# ⚠️ **强制置顶，不要"已在就跳过"**：别的测试文件可能先插了
+# `scripts/`（而那会让 `scripts/gui.py` 遮蔽 `gui/` 包）
+if str(ROOT) in sys.path:
+    sys.path.remove(str(ROOT))
+sys.path.insert(0, str(ROOT))
 
 from gui import agent_api as A  # noqa: E402
 

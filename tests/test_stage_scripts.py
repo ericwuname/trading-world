@@ -377,5 +377,257 @@ class TestSelfcheckPlaceholderExemptions(unittest.TestCase):
                          f"{buf.getvalue()[-600:]}")
 
 
+class TestStaticCheckUsesCompile(unittest.TestCase):
+    """⭐⭐ **`ast.parse` 不够：它漏掉"编译期语义错误"**（2026-09-22 实测）。
+
+    真实事故：`scripts/agent_review.py` 里重复写了一个 `min_history=` 参数
+    ⇒ **全量 1503 项测试全绿、静态检查也全绿**，
+    而那个脚本**一跑就崩**（在流水线里跑了才发现，白等两小时）。
+
+    根因：`ast.parse()` 只建 AST，**不做编译期语义检查**——
+    `f(a=1, a=2)`（关键字参数重复）它能静默通过，`compile()` 才会报。
+    ⭐ 判据：**"能建 AST" ≠ "能执行"**；
+    检查"能不能跑"就必须用那个"真正会执行的编译器"。
+
+    ⚠️ 这类"检查比被检查的还脆"的坑，本项目已经踩过三次——
+    所以这条测试要**红着进来**：先证明"注入一个坏文件 ⇒ 检查必须报 FAIL"。
+    """
+
+    def _run_with(self, files: dict[str, str]) -> tuple[int, str]:
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path as _P     # ⚠️ 本模块顶部没导入 Path
+
+        from scripts import selfcheck as S
+
+        with tempfile.TemporaryDirectory() as td:
+            root = _P(td)
+            for rel, body in files.items():
+                fp = root / rel
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text(body, encoding="utf-8")
+            (root / "scripts").mkdir(parents=True, exist_ok=True)
+            (root / "tw").mkdir(parents=True, exist_ok=True)
+            (root / "tests").mkdir(parents=True, exist_ok=True)
+            old_root = S.ROOT
+            S.ROOT = root
+            try:
+                r = S.Report()
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    S.check_source_placeholders(r)
+            finally:
+                S.ROOT = old_root
+            return r.fail, buf.getvalue()
+
+    def test_关键字参数重复必须被抓到(self):
+        """⭐⭐ **本组的核心**：这正是 `ast.parse` 会漏掉的那一类。
+
+        ⚠️ 用 `"\n".join([...])` 建字符串，**不写反斜杠转义**——
+        Git Bash(MSYS) 会把生成脚本里的 `\\` 转成 `/`，
+        我第一版就被它坑了（文件里出现 `-> int://n`），
+        结果那条测试**因为"文件本来就是坏的"而通过**，
+        **不是因为抓到了重复参数**。⇒ 所以下面还要校验**失败原因**。
+        """
+        bad = "\n".join([
+            "def f(a: int = 1) -> int:",
+            "    return a",
+            "f(a=1, a=2)",
+            "",
+        ])
+        fail, out = self._run_with({"scripts/broken_kwarg.py": bad})
+        self.assertGreater(fail, 0, f"没被抓到：\n{out[-400:]}")
+        # ⭐ **必须是"因为关键字参数重复"而被抓到**，不能是别的原因
+        self.assertIn("keyword argument repeated", out,
+                      f"抓是抓到了，但原因不对：\n{out[-400:]}")
+
+    def test_干净文件不报错(self):
+        """⚠️ 分辨力补强：不能"永远报 FAIL"。"""
+        good = "\n".join([
+            "def f(a: int = 1) -> int:",
+            "    return a",
+            "",
+            "print(f(a=2))",
+            "",
+        ])
+        fail, out = self._run_with({"scripts/ok.py": good})
+        self.assertEqual(fail, 0, f"干净文件被误报：\n{out[-400:]}")
+
+    def test_原理本身(self):
+        """把根因写成断言：`ast.parse` 通过、`compile` 不通过。"""
+        import ast as _ast
+        bad = "def f(a=1): pass\nf(a=1, a=2)\n"
+        _ast.parse(bad)                     # 不抛 ⇒ 漏检
+        with self.assertRaises(SyntaxError):
+            compile(bad, "x", "exec")
+
+
+class TestCallFailRateGuard(unittest.TestCase):
+    """⭐⭐ **「跑完了」≠「数据是用模型跑出来的」**（2026-09-22 由配额耗尽逼出来）。
+
+    当天额度用完后，`HTTPClient` 按 `on_exhausted="hold"` 把 429 回退成一个
+    **合法的「弃权」决策** ⇒ 后面 1030/1336 条根本不是模型做的，
+    而在场率/换手全变 0 —— **看起来像"模型很保守"**，
+    脚本照常跑完、照常出数字、报告照常生成。
+
+    ⇒ 判据：凡是"外部依赖可能失败、而失败会**退化成合法输出**"的地方，
+    失败率就必须是一个**会失败的断言**（同型：回放覆盖率、KPI 接线自检）。
+    """
+
+    def _mk(self, spec):
+        import json
+        import tempfile
+        from pathlib import Path as _P
+        d = tempfile.mkdtemp()
+        fp = _P(d) / "rec.jsonl"
+        rows = []
+        for ok, n in spec:
+            rows += [{"ok": ok, "error": "" if ok else "HTTP 429: 额度",
+                      "text": "{}"}] * n
+        fp.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
+                      encoding="utf-8")
+        return fp
+
+    def _check(self, fp, max_rate):
+        import sys as _s
+        from pathlib import Path as _P
+        # ⚠️ **临时插、用完还回去**：永久留在 `sys.path[0]` 会让
+        # `scripts/gui.py` **遮蔽 `gui/` 包** ⇒ `test_agent_gui` 整个模块
+        # 导入失败、一次丢 22 项测试（见 `tests/test_ablation.py` 的同类注释）。
+        _sp = str(_P(__file__).resolve().parent.parent / "scripts")
+        _added = _sp not in _s.path
+        if _added:
+            _s.path.insert(0, _sp)
+        try:
+            from _common import check_call_fail_rate
+            return check_call_fail_rate(fp, max_rate=max_rate)
+        finally:
+            if _added:
+                try:
+                    _s.path.remove(_sp)
+                except ValueError:
+                    pass
+
+    def test_额度耗尽必须拦住(self):
+        """⭐ 复现真实场景：77% 失败 ⇒ 必须抛，且**说明是静默回退**。"""
+        fp = self._mk([(True, 3), (False, 10)])
+        with self.assertRaises(RuntimeError) as cm:
+            self._check(fp, 0.01)
+        msg = str(cm.exception)
+        self.assertIn("不可用于任何结论", msg)
+        self.assertIn("静默回退", msg)
+        self.assertIn("额度", msg)
+
+    def test_干净数据要通过(self):
+        """⚠️ 分辨力补强：不能"永远抛"。"""
+        st = self._check(self._mk([(True, 100)]), 0.01)
+        self.assertEqual(st["n_bad"], 0)
+
+    def test_少量失败可容忍(self):
+        """真实场景：代理偶发抖动（4/2400 = 0.17%）⇒ 不该拦。"""
+        st = self._check(self._mk([(True, 2396), (False, 4)]), 0.01)
+        self.assertEqual(st["n_bad"], 4)
+        self.assertLess(st["rate"], 0.01)
+
+    def test_阈值边界(self):
+        """恰好等于阈值**不拦**（判据是 `>`，不是 `>=`）；差一点就拦。"""
+        self._check(self._mk([(True, 99), (False, 1)]), 0.01)
+        with self.assertRaises(RuntimeError):
+            self._check(self._mk([(True, 98), (False, 2)]), 0.01)
+
+    def test_空文件不炸(self):
+        import tempfile
+        from pathlib import Path as _P
+        fp = _P(tempfile.mkdtemp()) / "empty.jsonl"
+        fp.write_text("", encoding="utf-8")
+        st = self._check(fp, 0.01)
+        self.assertEqual(st["n_all"], 0)
+
+    def test_文件不存在不炸(self):
+        from pathlib import Path as _P
+        st = self._check(_P("no_such_file_xyz.jsonl"), 0.01)
+        self.assertEqual(st["n_all"], 0)
+
+    def test_坏行被跳过(self):
+        """⚠️ 坏行不许让守卫崩，也**不许被算进分母**。
+
+        ⚠️ 我第一版只放了 1 好 1 坏 ⇒ 50% > 阈值 ⇒ 守卫**正确地抛了**，
+        而我的断言却以为它不该抛。**是测试的预期错了，不是守卫错了。**
+        ⇒ 改成"多好行 + 1 坏行"，这样既能验分母，又不会触发阈值。
+        """
+        import json
+        import tempfile
+        from pathlib import Path as _P
+        lines = ([json.dumps({"ok": True})] * 200
+                 + ["这不是 json"]
+                 + [json.dumps({"ok": False, "error": "x"})])
+        fp = _P(tempfile.mkdtemp()) / "bad.jsonl"
+        fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        st = self._check(fp, 0.01)
+        self.assertEqual(st["n_all"], 201)      # 坏行**不进分母**
+        self.assertEqual(st["n_bad"], 1)
+
+
+class TestNoPackageShadowing(unittest.TestCase):
+    """⭐⭐ **`scripts/` 不许遮蔽同名包**（2026-09-22 一次丢掉 22 项测试）。
+
+    真实事故链：
+    1. 某测试 helper 把 `scripts/` 插进 `sys.path[0]` **并留在那里**；
+    2. 之后 `import gui` 找到的是 **`scripts/gui.py`（模块）**
+       而不是 **`gui/`（包）** ⇒ `ModuleNotFoundError: 'gui' is not a package`；
+    3. `tests/test_agent_gui.py` **整个模块导入失败** ⇒ 它的 20+ 项测试
+       **根本没被收集**；
+    4. 而全量输出只写一句 `Ran 1497 tests`（此前 1519）
+       ⇒ **除非你记得住那个数字，否则完全看不出少了什么。**
+
+    ⭐ 判据：**"收集到的测试数变化"是最容易被忽略的信号**——
+    所以这里把它变成一条会失败的断言，而不是靠人记住 1519。
+
+    ⚠️ 这两条测试**必须自己把前提摆好**（不能依赖环境的 `sys.path` 顺序）：
+    我第一版直接 `import gui`，在单独跑这个文件时**因为环境里
+    `scripts` 恰好在前面而失败** —— 那测的是"环境"而不是"代码"。
+    """
+
+    def test_隐患本身存在_所以顺序是承重的(self):
+        """先把隐患摆出来：`scripts/gui.py` **与** `gui/` **同名**。
+
+        ⚠️ 若这条失败（某一边不存在了），说明目录结构变了 ⇒
+        下面那条"顺序必须安全"的结论要重新评估。
+        """
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parent.parent
+        self.assertTrue((root / "gui" / "__init__.py").is_file(),
+                        "`gui/` 应当是一个包")
+        self.assertTrue((root / "scripts" / "gui.py").is_file(),
+                        "`scripts/gui.py` 应当存在（入口脚本）")
+
+    def test_项目根排在scripts之前时gui解析成包(self):
+        """**在安全前提下**（项目根在前），`gui` 必须解析成**包**。"""
+        import importlib
+        import sys as _s
+        from pathlib import Path as _P
+        root = str(_P(__file__).resolve().parent.parent)
+        scripts = str(_P(root) / "scripts")
+        saved = list(_s.path)
+        cached = _s.modules.pop("gui", None)
+        try:
+            # 摆出"安全顺序"：项目根必须在 scripts 之前
+            while root in _s.path:
+                _s.path.remove(root)
+            _s.path.insert(0, root)
+            if scripts in _s.path:
+                _s.path.remove(scripts)
+            mod = importlib.import_module("gui")
+            self.assertTrue(
+                hasattr(mod, "__path__"),
+                f"`gui` 被解析成了模块而不是包"
+                f"（{getattr(mod, '__file__', '?')}）")
+        finally:
+            _s.path[:] = saved
+            if cached is not None:
+                _s.modules["gui"] = cached
+
+
 if __name__ == "__main__":
     unittest.main()

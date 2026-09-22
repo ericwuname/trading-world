@@ -231,6 +231,10 @@ def run_agent_session(
                 equity=equity, cash=float(account.cash),
                 inventory=float(pos.qty),
                 mark=mark,
+                # ⭐ 三臂消融的 B 臂：把指标窗口整体前移（信息过期、格式不变）。
+                # ⚠️ 错位后的收盘价**进 visible_state** ⇒ 它被留痕、也能被回放
+                # 逐字节重建（不需要第二套口径）。
+                feature_shift=agent.config.features_shift,
             )
         except ValueError as exc:
             res.skipped.append({"i": i, "reason": str(exc)})

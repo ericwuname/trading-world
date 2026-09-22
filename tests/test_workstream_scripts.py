@@ -23,7 +23,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.append(str(ROOT / "scripts"))  # 追加：插到前面会遮蔽同名包（scripts/gui.py vs gui/）
 
 from tw.agents.base import Agent  # noqa: E402
 from tw.order_flow.meta_order import (  # noqa: E402

@@ -680,9 +680,19 @@ def check_source_placeholders(r: Report) -> None:
             continue
         try:
             src = p.read_text(encoding="utf-8")
+            # ⚠️⚠️ **必须 `compile()`，不能只 `ast.parse()`**（2026-09-22 实测）：
+            # `ast.parse` 只建 AST，**不做编译期的语义检查** ⇒
+            # `f(a=1, a=2)`（**关键字参数重复**）它能**静默通过**，
+            # 而 `compile()` 会报 `keyword argument repeated`。
+            # ⇒ 真实后果：`scripts/agent_review.py` 里重复写了一个 `min_history=`
+            #   ⇒ **全量 1503 项测试全绿、静态检查也全绿**，
+            #   而那个脚本**一跑就崩**（跑在流水线里才发现，白等了两小时）。
+            # ⭐ 判据：**"能建 AST" ≠ "能执行"**；
+            #   检查"能不能跑"就要用那个"真正会执行的编译器"。
             tree = ast.parse(src)
+            compile(src, str(p), "exec")
         except (OSError, SyntaxError) as e:
-            r.bad(f"{p.relative_to(ROOT)} 解析失败：{e}")
+            r.bad(f"{p.relative_to(ROOT)} 编译失败：{e}")
             continue
         n_scanned += 1
         lines = src.splitlines()

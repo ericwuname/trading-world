@@ -1,5 +1,5 @@
 {
-  "next_available": 117,
+  "next_available": 120,
   "history": [
     {
       "ids": [],
@@ -204,6 +204,27 @@
       ],
       "claimed_by": "A7-分段偏移守卫",
       "claimed_at": "2026-09-22T01:01:43"
+    },
+    {
+      "ids": [
+        117
+      ],
+      "claimed_by": "A8-compile静态检查",
+      "claimed_at": "2026-09-22T10:05:50"
+    },
+    {
+      "ids": [
+        118
+      ],
+      "claimed_by": "A9-异质性临界值",
+      "claimed_at": "2026-09-22T12:25:52"
+    },
+    {
+      "ids": [
+        119
+      ],
+      "claimed_by": "A9-调用失败率守卫",
+      "claimed_at": "2026-09-22T13:41:14"
     }
   ],
   "note": "变异测试编号的权威来源。新增变异体前用 `python scripts/claim_mutation_ids.py --claim N --by <工作线>` 领取；next_available 的初值由 `--init` 从 mutation_check.py 实读推导，**不采用任何文档里预先写死的数字**。"

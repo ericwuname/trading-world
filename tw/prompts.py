@@ -614,12 +614,29 @@ def _kpi_text(kpi: Any, st: Any) -> str:
     return "\n".join(lines)
 
 
-def _features_text(feats: dict[str, float]) -> str:
+#: 三臂消融用的"指标来源"模式（A6 §6 的设计）。
+#: ⭐ **A−B 与 B−C 问的是两个不同的问题**，必须分开：
+#:   - ``A − B`` = **指标里的信息价值**（B 保住了"有个指标板块"，只是信息过期）
+#:   - ``B − C`` = **纯引导效应**（有没有这一步"照指标做"的心理暗示）
+FEATURE_MODES: tuple[str, ...] = ("real", "shifted", "none")
+
+
+def _features_text(feats: dict[str, float], mode: str = "real") -> str:
     """把特征排成人读的几行。
 
     ⚠️ **算不出来时要说"算不出来"**，不能用 0 顶替——
     0 会被模型当成一个真实的观测值参与推理。
     """
+    if mode == "none":
+        # ⚠️ **必须与"样本不足"分开说**：
+        # 说"样本不足"是一句**假话**（数据是够的，是这次不给），
+        # 而假话本身会改变行为（"样本不足"可能让它更保守）
+        # ⇒ 那测到的就不是"没有指标的效应"，而是"被误导的效应"。
+        return ("（**本次实验不提供算好的指标**——"
+                "请只用下面的原始收盘价自己判断）")
+    if mode == "shifted" and not feats:
+        return ("（**本次实验提供的指标来自更早的一段行情**，"
+                "当前窗口算不出——请只用下面的原始收盘价判断）")
     if not feats:
         return "（样本不足，本次算不出指标——请只用下面的原始收盘价判断）"
     fmt = {
@@ -654,6 +671,28 @@ def _experiences_text(exps: Any) -> str:
     return exp_lines(exps)
 
 
+def _pick_feature_source(rc: list[float], feature_closes: Any,
+                        mode: str) -> list[float]:
+    """三臂消融里"指标用哪一段收盘价算"的**唯一**决定处。
+
+    ⭐ 三条映射（A6 §6）：
+    - ``real``    → **当前**窗口（A 臂）
+    - ``shifted`` → **更早一段**窗口（B 臂）：格式、长度都一样，**只有信息过期**
+      ⇒ `A−B` 才是"指标里的信息价值"，而不是"有数据 vs 没数据"
+    - ``none``    → 空（C 臂）；渲染时**明说"本次实验不提供"**，不假装样本不足
+
+    ⚠️⚠️ **`shifted` 缺数据时不许静默回退成 `rc`**：
+    那会让 B 臂**等于** A 臂 ⇒ 消融变成空转（跑两遍同一件事、还照样出数字）。
+    这是本项目"静默失败"家族的又一形态，所以在这里显式挡住：
+    缺数据 ⇒ 返回空 ⇒ 渲染成"错位数据缺失"的**实话**。
+    """
+    if mode == "shifted":
+        return [float(x) for x in (feature_closes or [])]
+    if mode == "none":
+        return []
+    return list(rc)
+
+
 def build_messages(
     visible: dict[str, Any],
     *,
@@ -668,6 +707,8 @@ def build_messages(
     kpi: Any = None,
     kpi_state: Any = None,
     experiences: Any = None,
+    feature_closes: Any = None,
+    features_mode: str = "real",
 ) -> list[dict[str, Any]]:
     """把 ``visible_state`` 变成 ``messages``。
 
@@ -712,7 +753,9 @@ def build_messages(
         # ⚠️ 特征只从 ``visible`` 里的 ``recent_closes`` 算——
         # **不额外取数据**。否则留痕里的 visible_state 就不再是
         # "模型看到的全部"，回放会变成重演一个信息更少的场景。
-        features_txt=_features_text(market_features(rc)),
+        features_txt=_features_text(
+            market_features(_pick_feature_source(
+                rc, feature_closes, features_mode)), features_mode),
         # ⚠️ KPI 段只对 v5 有占位符；v1~v4 的模板没有 {kpi_txt}，
         # 多传一个 kwarg 给 ``str.format`` 是安全的（未被引用的会被忽略）。
         kpi_txt=_kpi_text(kpi, kpi_state),

@@ -164,3 +164,59 @@ def mutation_range() -> str:
     """``"M1~M42"`` 这样的编号范围；解析不出来时返回 ``"M?"``。"""
     ids = mutation_ids()
     return f"M{ids[0]}~M{ids[-1]}" if ids else "M?"
+
+
+# ======================================================================
+# ⭐⭐ 调用失败率守卫（2026-09-22 由**配额耗尽**逼出来）
+# ======================================================================
+def check_call_fail_rate(record_path, *, max_rate: float = 0.01,
+                         where: str = "") -> dict:
+    """扫录制文件，统计 ``ok=False`` 的比例；**超阈值就抛异常**。
+
+    ⚠️⚠️ 为什么这一条必须"会失败"而不是"打印一个数"：
+
+    当天额度用完后，`HTTPClient` 按 ``on_exhausted="hold"`` 把 429
+    **回退成一个合法的"弃权"决策** ⇒ 后面 1030/1336 条**根本不是模型做的**，
+    而在场率/换手全变成 0 —— **看起来像"模型很保守"**，
+    脚本照常跑完、照常出数字、报告照常生成。
+
+    ⇒ 判据：**「跑完了」不等于「数据是用模型跑出来的」。**
+    凡是"外部依赖可能失败、而失败会退化成**合法输出**"的地方，
+    失败率就必须是一个**会失败的断言**。
+    （同型守卫：回放覆盖率、KPI 接线自检。）
+
+    返回统计字典；超阈值时 ``raise RuntimeError``（调用方转成 SystemExit）。
+    """
+    import json as _json
+    from pathlib import Path as _P
+
+    p = _P(record_path)
+    n_all = n_bad = 0
+    errs: dict = {}
+    if p.exists():
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = _json.loads(line)
+                except ValueError:
+                    continue
+                n_all += 1
+                if row.get("ok") is False:
+                    n_bad += 1
+                    e = str(row.get("error") or "?")[:60]
+                    errs[e] = errs.get(e, 0) + 1
+    rate = (n_bad / n_all) if n_all else 0.0
+    stat = {"n_all": n_all, "n_bad": n_bad, "rate": rate, "errors": errs}
+    if rate > max_rate:
+        top = max(errs.items(), key=lambda x: x[1])[0] if errs else "?"
+        raise RuntimeError(
+            f"❌{(' ' + where) if where else ''} 调用失败率 {rate:.2%} "
+            f"超过阈值 {max_rate:.2%} ⇒ **这一组数据不可用于任何结论**。\n"
+            f"   最常见原因：**额度耗尽**（HTTP 429）或代理不通。\n"
+            f"   最严重的后果不是「跑失败」，而是**静默回退**：\n"
+            f"   on_exhausted=\"hold\" 会把失败决策写成一个合法的「弃权」，\n"
+            f"   于是在场率/换手全变 0，**看起来像模型很保守**，\n"
+            f"   而脚本照常跑完、照常出数字。\n"
+            f"   最高频错误：{top}\n"
+            f"   如确需接受这些失败，请显式放宽 max_rate。")
+    return stat

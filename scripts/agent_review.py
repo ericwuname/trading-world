@@ -116,6 +116,14 @@ def main() -> int:
                          "另一份行情（覆盖率会掉到 0，脚本会直接失败）")
     ap.add_argument("--bar", default="1H")
     ap.add_argument("--seg-len", type=int, default=50)
+    ap.add_argument("--max-fail-rate", type=float, default=0.01,
+                    help="⭐ 调用失败率上限；超了直接失败（额度耗尽会让经验库悄悄变空）")
+    ap.add_argument("--min-history", type=int, default=12,
+                    help="⚠️ 必须与录制时一致（三臂消融用了 24）")
+    ap.add_argument("--features-mode", default="real",
+                    choices=("real", "shifted", "none"),
+                    help="⚠️ 三臂消融的录制必须原样重建，否则覆盖率 0%")
+    ap.add_argument("--feature-shift", type=int, default=0)
     ap.add_argument("--seg-offset", type=int, default=0,
                     help="⚠️ 必须与录制时**同一个偏移**——否则重建的是**另一组窗口**")
     ap.add_argument("--segs", type=int, default=8)
@@ -142,7 +150,8 @@ def main() -> int:
 
     banner("复盘与归因分析（A6）")
 
-    need = 12 + args.segs * args.seg_len + 5
+    # ⚠️ 同 agent_segmented：必须用 `--min-history`，写死 12 会少取根数
+    need = int(args.min_history) + args.segs * args.seg_len + 5
     store = MarketStore()
     try:
         series = store.load_candles(args.source, args.inst, args.bar,
@@ -198,7 +207,9 @@ def main() -> int:
     agent_cfg = AgentConfig(inst_id=args.inst, bar=args.bar,
                             template=args.template, n_samples=args.samples,
                             temperature=0.2, kpi=kpi_cfg,
-                            exp_store=exp_store)
+                            exp_store=exp_store,
+                            features_mode=args.features_mode,
+                            features_shift=int(args.feature_shift))
     llm = f"llm_{args.template}"
     factories = {llm: (lambda _c: lambda: TradingAgent(
         client=_c, config=agent_cfg, limits=RiskLimits()))(client)}
@@ -206,7 +217,8 @@ def main() -> int:
     print(f"  重建：{args.segs} 段 × {args.seg_len} 根")
 
     res = run_paired_segments(
-        series, factories, seg_len=args.seg_len, min_history=12,
+        series, factories, seg_len=args.seg_len,
+        min_history=int(args.min_history),
         max_segs=args.segs, exec_config=ExecConfig(),
         parallel=1, keep_runs=True, seg_offset=args.seg_offset,
     )
@@ -347,6 +359,18 @@ def main() -> int:
             reviews.append(entry)
 
     # ---- 报告 ---------------------------------------------------------
+    # ---- ⭐ 复盘调用失败率守卫（同 agent_segmented 的理由）------------
+    if args.record_review:
+        from _common import check_call_fail_rate
+        try:
+            _st = check_call_fail_rate(args.record_review,
+                                       max_rate=args.max_fail_rate,
+                                       where="复盘")
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from None
+        print(f"\n  ⭐ 复盘调用失败率：{_st['n_bad']}/{_st['n_all']}"
+              f"（{_st['rate']:.2%}）")
+
     print("\n" + "=" * 74)
     print(f"复盘与归因（回放重建，回放覆盖率 {cov:.1%}）")
     print("=" * 74)

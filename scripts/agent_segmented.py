@@ -89,6 +89,20 @@ def main() -> int:
                          "见 `scripts/a6_power.py`")
     ap.add_argument("--bar", default="1H")
     ap.add_argument("--seg-len", type=int, default=50, help="每段根数 L")
+    ap.add_argument("--min-history", type=int, default=12,
+                    help="每段开始前要留多少根历史。⚠️ 跑 B 臂（错位指标）时"
+                         "**必须够大**（≥ n_closes + feature_shift），"
+                         "否则错位窗口会被截短 ⇒ 各臂格式不一致、消融失去意义")
+    ap.add_argument("--features-mode", default="real",
+                    choices=("real", "shifted", "none"),
+                    help="⭐ 三臂消融：real=真指标(A) / shifted=错位指标(B) / "
+                         "none=不给指标(C)。A−B=信息价值，B−C=引导效应")
+    ap.add_argument("--feature-shift", type=int, default=0,
+                    help="shifted 臂往前挪几根（建议 = n_closes，即一整段窗口）")
+    ap.add_argument("--max-fail-rate", type=float, default=0.01,
+                    help="⭐ 调用失败率上限（默认 1%%）。超过就直接失败——"
+                         "额度耗尽时 on_exhausted 会把失败决策写成合法的"
+                         "「弃权」，脚本会照常出数字，无法察觉")
     ap.add_argument("--seg-offset", type=int, default=0,
                     help="⭐ 稳健性旋钮：把整张「段网格」整体平移"
                          "（等价于换一组窗口）。限定 [0, seg-len)")
@@ -158,7 +172,12 @@ def main() -> int:
     # ⚠️ 取的是**最近**的 `need` 根（`load_candles` 默认从最新往回取）。
     # 段长越短、段数越多，同一个库里可用的段就越多——
     # **这是"能不能判"的主要杠杆**（见 `scripts/a6_power.py` 的判力比）。
-    need = 12 + int(args.segs) * int(args.seg_len) + 5
+    # ⚠️ **必须用 `args.min_history` 而不是写死 12**：
+    # 三臂消融把 min_history 抬到 24（B 臂的错位窗口要往前挪 12 根）——
+    # 若这里仍按 12 取数，会**少取 12 根** ⇒ 段数不足（48 段只切出 46），
+    # 而日志照常打印、数字照常出来，**看不出少了段**。
+    need = (int(args.min_history) + int(args.segs) * int(args.seg_len)
+            + 5)
     store = MarketStore()
     try:
         series = store.load_candles(args.source, args.inst, args.bar,
@@ -166,11 +185,18 @@ def main() -> int:
     finally:
         store.close()
     n = len(getattr(series, "close", []))
-    rngs = segment_ranges(n, args.seg_len, min_history=12)[: int(args.segs)]
+    # ⚠️ ``offset`` **必须传进去**：这是**要打印的那张网格**，也是真正跑的那张。
+    #    漏传时这里会打印 **offset=0 的基准网格**（而实跑用的是平移后的），
+    #    于是两组不同 offset 的日志印出**一模一样的区间**——
+    #    看起来像"offset 没生效"，实际上只是这行日志漏了参数。
+    rngs = segment_ranges(n, args.seg_len,
+                          min_history=int(args.min_history),
+                          offset=int(args.seg_offset))[: int(args.segs)]
     n_calls = len(rngs) * int(args.seg_len) * int(args.samples)
     print(f"  行情 {args.inst} {args.bar}：读入 {n} 根")
     print(f"  切段：L={args.seg_len}，可用 {len(rngs)} 段（请求 {args.segs}）")
-    print(f"  区间：{rngs[0] if rngs else '—'} … {rngs[-1] if rngs else '—'}")
+    print(f"  区间：{rngs[0] if rngs else '—'} … {rngs[-1] if rngs else '—'}"
+          f"（seg_offset={args.seg_offset}）")
     print(f"  ⚠️ 额度预估：**{n_calls} 次调用**"
           f"（= {len(rngs)} 段 × {args.seg_len} 根 × {args.samples} 采样）")
 
@@ -212,7 +238,7 @@ def main() -> int:
             print(f"    标定池：{sorted(calib_factories)}"
                   f"（已剔除 {list(KPI_CALIB_EXCLUDE)}，理由见代码注释）")
             pre = run_paired_segments(
-                series, calib_factories, seg_len=args.seg_len, min_history=12,
+                series, calib_factories, seg_len=args.seg_len, min_history=int(args.min_history),
                 initial_cash=args.equity, lever=args.lever,
                 max_segs=args.segs, exec_config=base_exec,
                 parallel=max(1, args.parallel),
@@ -333,7 +359,20 @@ def main() -> int:
         # 而日志只是淡淡地说了一句"未给 --record"。**静默忽略参数**是最坏的一种。
         if args.record:
             client = Recorder(client, args.record)
-        agent_cfg = AgentConfig(inst_id=args.inst, bar=args.bar,
+        if args.features_mode == "shifted" and args.feature_shift <= 0:
+            raise SystemExit(
+                "❌ --features-mode shifted 必须配 --feature-shift > 0，"
+                "否则 B 臂与 A 臂**完全一样**，消融静默变成空转。")
+        if args.features_mode == "shifted":
+            _need = 12 + args.feature_shift
+            if args.min_history < _need:
+                print(f"  ⭐ 自动抬高 min_history：{args.min_history} → "
+                      f"{_need}（= n_closes 12 + shift "
+                      f"{args.feature_shift}）；否则 B 臂的错位窗口会被截短、"
+                      f"与 A 臂格式不一致")
+                args.min_history = _need
+        agent_cfg = AgentConfig(
+            inst_id=args.inst, bar=args.bar,
                                 template=args.template, lever=args.lever,
                                 n_samples=args.samples,
                                 temperature=args.temperature,
@@ -344,7 +383,11 @@ def main() -> int:
                                 # ⇒ 是"读实际发出去的 prompt"才发现的。
                                 kpi=kpi_cfg,
                                 exp_store=exp_store,
-                                n_experiences=int(args.exp_k))
+                                n_experiences=int(args.exp_k),
+                                # ⭐ 三臂消融（A/B/C）。⚠️ 它进 `decision_id`
+                                # （label + model_params），换了臂就是换了实验。
+                                features_mode=args.features_mode,
+                                features_shift=int(args.feature_shift))
         factories[llm_name] = (lambda _c: lambda: TradingAgent(
             client=_c, config=agent_cfg, limits=RiskLimits()))(client)
 
@@ -358,7 +401,7 @@ def main() -> int:
             print(f"    进度 {i}/{total}", flush=True)
 
     res = run_paired_segments(
-        series, factories, seg_len=args.seg_len, min_history=12,
+        series, factories, seg_len=args.seg_len, min_history=int(args.min_history),
         initial_cash=args.equity, lever=args.lever, max_segs=args.segs,
         exec_config=base_exec, parallel=max(1, args.parallel),
         seg_offset=args.seg_offset,
@@ -389,65 +432,18 @@ def main() -> int:
             if seen_labels:
                 break
         if args.record and Path(args.record).exists():
-            with open(args.record, encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        row = json.loads(line)
-                    except ValueError:
-                        continue
-                    txt = " ".join(str(m.get("content", ""))
-                                   for m in (row.get("messages") or []))
-                    if not txt:
-                        continue
-                    prompt_ok = ("在场率下限" in txt) and ("未设置" not in txt)
-                    src = f"{args.record}（录制原文）"
-                    break
-        else:
-            src = "（未给 --record，退化为只查 prompt_template 标签）"
-        _bad = [x for x in seen_labels if "#kpi" not in str(x)]
-        print("\n  ⭐ KPI 接线自检（读**实际发出去的 prompt**，不看参数）")
-        print(f"     证据来源：{src}")
-        print(f"     decision_id.prompt_template 例：{seen_labels[:1]}")
-        print(f"     prompt 正文含 KPI 段：{prompt_ok}")
-        if _bad or prompt_ok is False:
-            raise AssertionError(
-                "❌ KPI 没真的接上："
-                f"prompt_template 缺 '#kpi' 的有 {len(_bad)} 段；"
-                f"prompt 正文检查={prompt_ok!r}。"
-                "这一组数据**不可用于 KPI 结论**，必须修好重跑。")
-        if prompt_ok is None:
-            print("     ⚠️ 没拿到 prompt 原文（缺 --record）⇒ "
-                  "只验证了模板标签，**强度不足**，建议补 --record 重跑。")
-
-    # ---- ⭐ 经验接线自检（同 KPI 那条的教训：读**实际发出去的** prompt）----
-    if exp_store is not None and not args.rules_only:
-        n_with = 0
-        n_seen = 0
-        if args.record and Path(args.record).exists():
-            with open(args.record, encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        row = json.loads(line)
-                    except ValueError:
-                        continue
-                    txt = " ".join(str(m.get("content", ""))
-                                   for m in (row.get("messages") or []))
-                    if "过去复盘得到的经验" not in txt:
-                        continue
-                    n_seen += 1
-                    if "经验库为空" not in txt:
-                        n_with += 1
-        print("\n  ⭐ 经验接线自检（读实际发出去的 prompt）")
-        print(f"     含经验段的 prompt：{n_seen} 条；其中真的带了经验：{n_with} 条")
-        if n_seen == 0:
-            raise AssertionError(
-                "❌ 一条 prompt 里都没有经验段 ⇒ 经验没接上，"
-                "这一组数据**不可用于经验结论**。")
-        if n_with == 0:
-            raise AssertionError(
-                "❌ 经验段全是「经验库为空」⇒ 时间过滤把所有经验都挡掉了。"
-                "最可能的原因：经验的 `created_tick` 全部 ≥ 本次运行的 tick 范围"
-                "（例如经验来自另一份/更晚的数据）。")
+            from _common import check_call_fail_rate
+            try:
+                _st = check_call_fail_rate(args.record,
+                                           max_rate=args.max_fail_rate,
+                                           where="多段实验")
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from None
+            print(f"\n  ⭐ 调用失败率自检：{_st['n_bad']}/{_st['n_all']}"
+                  f"（{_st['rate']:.2%}）")
+            for _e, _c in sorted(_st["errors"].items(),
+                                 key=lambda x: -x[1])[:3]:
+                print(f"       {_c:>5}  {_e}")
 
     # ---- 报告 ---------------------------------------------------------
     print("\n" + "=" * 74)

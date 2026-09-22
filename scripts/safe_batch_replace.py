@@ -135,7 +135,9 @@ def safe_batch_replace(file_paths: list[str | Path],
                 tofile=f"b/{_rel_key(fp, root_p)}", lineterm=""))
             if check_syntax and fp.suffix in PY_SUFFIXES:
                 try:
-                    ast.parse(modified)
+                    # ⚠️ 同 selfcheck：`ast.parse` **漏掉编译期语义错误**
+                    # （如"关键字参数重复"）⇒ 必须 `compile()`。
+                    compile(modified, key, "exec")
                 except SyntaxError as e:
                     syntax_errors[key] = f"第 {e.lineno} 行：{e.msg}"
             staged[str(_rel_key(fp, root_p))] = modified
