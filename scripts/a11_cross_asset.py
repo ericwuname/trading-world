@@ -42,6 +42,7 @@ from tw.segmented import (  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 A9, A11 = ROOT / "out" / "a9", ROOT / "out" / "a11"
 A12 = ROOT / "out" / "a12"
+A13 = ROOT / "out" / "a13"
 OUTD = ROOT / "out" / "a11"
 
 #: 跨标的要用的 (标的, 处理臂产物, 处理键, 基准臂产物, 基准键)
@@ -61,6 +62,16 @@ RUNS: dict[str, dict[str, Any]] = {
     },
     # ⭐ 第三个独立标的（A12）。n 取 250 是为了**一个配额窗口装得下两臂**
     # （250 × 8 × 2 = 4,000 次）。SOL 可用 498 段 ⇒ 够。
+    # ⭐⭐ A13：**同一标的的另一个不重叠时段**（= 一个独立"块"）。
+    # ⚠️ 它**不是**新标的，而是"BTC 的更早 100 天"——
+    # 用来直接检验"效应能不能持续"（跨时段复现）。
+    # 时段：2026-03-12 → 06-04；与 BTC 时段1（2026-06-08 → 09-16）**不共享任何一根 K 线**。
+    "BTC·时段2": {
+        "k250e2": {
+            "kpi": (A13 / "eval_v6_e2_BTC.json", "llm_v6"),
+            "base": (A13 / "eval_v4_e2_BTC.json", "llm_v4"),
+        },
+    },
     "SOL": {
         "k250": {
             "kpi": (A12 / "eval_v6_k250o0_SOL.json", "llm_v6"),

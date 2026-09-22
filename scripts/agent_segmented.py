@@ -107,6 +107,11 @@ def main() -> int:
                     help="⭐ 稳健性旋钮：把整张「段网格」整体平移"
                          "（等价于换一组窗口）。限定 [0, seg-len)")
     ap.add_argument("--segs", type=int, default=8, help="段数 K")
+    # ⭐ `--skip-bars`：**丢掉最近 K 根**，于是窗口整体往前挪 ⇒ 换到**更早的时段**。
+    # ⚠️ 为什么需要它：`--seg-offset` 只是**网格对齐**（同一窗口的不同切法，**重叠**），
+    # 而"不重叠的另一个时段"才能当**独立的复现块**（见 A13 的块级判力账）。
+    ap.add_argument("--skip-bars", type=int, default=0,
+                    help="丢掉最近 K 根 K 线（换到更早的时段，用于不重叠复现）")
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--temperature", type=float, default=0.2)
     ap.add_argument("--template", default="v2")
@@ -176,14 +181,31 @@ def main() -> int:
     # 三臂消融把 min_history 抬到 24（B 臂的错位窗口要往前挪 12 根）——
     # 若这里仍按 12 取数，会**少取 12 根** ⇒ 段数不足（48 段只切出 46），
     # 而日志照常打印、数字照常出来，**看不出少了段**。
+    skip = int(getattr(args, "skip_bars", 0) or 0)
     need = (int(args.min_history) + int(args.segs) * int(args.seg_len)
             + 5)
     store = MarketStore()
     try:
+        # ⭐ 多取 `skip` 根：截掉**最近**的 skip 根之后，剩下的正好够用，
+        #    而窗口整体往**更早**的方向挪了 skip 根 ⇒ 与不 skip 的那次**不重叠**。
         series = store.load_candles(args.source, args.inst, args.bar,
-                                    limit=need)
+                                    limit=need + skip)
     finally:
         store.close()
+    if skip > 0:
+        # ⚠️ `load_candles` 返回的是**升序**（旧→新）的数组 ⇒ 取**前** `need` 根
+        #    就是"更早的那个时段"。
+        import dataclasses
+        keep = len(series) - skip
+        if keep < need:
+            print(f"  ⚠️ 数据不足：想要 {need} 根（skip={skip} 后），只有 {keep} 根")
+        series = dataclasses.replace(
+            series,
+            timestamp=series.timestamp[:keep], open=series.open[:keep],
+            high=series.high[:keep], low=series.low[:keep],
+            close=series.close[:keep], volume=series.volume[:keep],
+            confirm=series.confirm[:keep],
+        )
     n = len(getattr(series, "close", []))
     # ⚠️ ``offset`` **必须传进去**：这是**要打印的那张网格**，也是真正跑的那张。
     #    漏传时这里会打印 **offset=0 的基准网格**（而实跑用的是平移后的），
@@ -195,6 +217,18 @@ def main() -> int:
     n_calls = len(rngs) * int(args.seg_len) * int(args.samples)
     print(f"  行情 {args.inst} {args.bar}：读入 {n} 根")
     print(f"  切段：L={args.seg_len}，可用 {len(rngs)} 段（请求 {args.segs}）")
+    # ⭐ 打印**真实日期范围**：这是"两个块不重叠"这个前提的**证据**（不是声称）。
+    try:
+        import datetime as _dt
+        def _d(ts):
+            return _dt.datetime.fromtimestamp(
+                float(ts) / 1000.0, _dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
+        ts = getattr(series, "timestamp", None)
+        if ts is not None and len(ts) >= 2 and skip > 0:
+            print(f"  ⭐ 时段（skip_bars={skip}）：{_d(ts[0])} → {_d(ts[-1])}"
+                  f"（用于**不重叠复现块**）")
+    except Exception as _e:                      # noqa: BLE001
+        print(f"  （日期范围打印失败，不影响运行：{type(_e).__name__}）")
     print(f"  区间：{rngs[0] if rngs else '—'} … {rngs[-1] if rngs else '—'}"
           f"（seg_offset={args.seg_offset}）")
     print(f"  ⚠️ 额度预估：**{n_calls} 次调用**"

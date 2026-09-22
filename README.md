@@ -150,6 +150,11 @@ $PY scripts/fix_ascii_quotes.py scripts/xxx.py --write   # 修中文里的裸引
 # ── A12：三标的复现 + 全局复盘（收官）──
 $PY scripts/make_a12_synthesis.py         # → docs/A12-三标的复现与全局复盘.md
 
+# ── A13：「多大才算值得关心」——把效应换算成可决策的单位 ──
+#   ⭐ 含「交换率」（多少 bp 换 1pp 在场率）与「块级判力账」
+#   ⭐ 用 --skip-bars 换到**不重叠的时段**做独立复现块
+$PY scripts/make_a13_effect_size.py       # → docs/A13-效应量级与值得关心的门槛.md
+
 # v7 = v4 + 「过去复盘得到的经验」（经验库的对照实验）
 $PY scripts/agent_review.py --replay ... --llm-review     # 生成经验库（回放，只花复盘的钱）
 $PY scripts/agent_segmented.py ... --template v7 --exp-from out/a6/review8_v4_BTC.json
@@ -747,7 +752,7 @@ gui/            ⭐  桌面端
   desktop.py         pywebview 窗口，失败自动退回浏览器
   static/index.html  单文件前端（零外部依赖，图表手写 canvas）
 
-tests/              1593 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
+tests/              1601 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
                     + 数据层与 MCP + A1 订单模型与账户 + A2 留痕与风控 + A3 LLM 接入
                     + A4 执行与评估 + A5 GUI 集成 + A6 多段配对度量 / 结果回填 / KPI / 复盘归因与经验库）
                     ↑ 这个数字由 `scripts/selfcheck.py` 的 ③b 项与
