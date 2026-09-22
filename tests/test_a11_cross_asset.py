@@ -25,7 +25,7 @@ if str(ROOT / "scripts") not in sys.path:
     sys.path.append(str(ROOT / "scripts"))
 
 from scripts.a11_cross_asset import (  # noqa: E402
-    check_same_instructions, pool_instruments, stat,
+    check_same_instructions, pool_instruments, pooled_mc_calibration, stat,
 )
 
 KPI_A = {"target_return": -0.00022384643115001381,
@@ -169,6 +169,56 @@ class TestSignConvention(unittest.TestCase):
             encoding="utf-8")
         s = stat(base, "llm", kpi, "llm")
         self.assertLess(s["effect"], 0.0, "处理更差 ⇒ 效应必须是负的")
+
+
+class TestPooledStatisticIsCalibrated(unittest.TestCase):
+    """⭐⭐ **宣布「显著」之前必须先验合并统计量本身**（A10 的纪律）。
+
+    本轮第一次出现「合并后显著」（z≈−2.7）。若合并的 z 本身偏大，
+    那这个显著就是**装置造出来的**，不是数据里的。
+    ⇒ 用**有已知答案的合成数据**（正态残差、δ=0）反过来检验它。
+    """
+
+    def _normal(self, n, sd, seed):
+        import random
+        rng = random.Random(seed)
+        return [rng.gauss(0, sd) for _ in range(n)]
+
+    def test_delta为零时假阳性率约5个百分点(self):
+        a = self._normal(300, 0.0033, 1)
+        b = self._normal(400, 0.0033, 2)
+        cal = pooled_mc_calibration(a, b, delta=0.0, reps=2000, seed=7)
+        # 二项标准误 ≈ 0.49pp ⇒ 3σ ≈ 1.5pp
+        self.assertLess(abs(cal["false_positive_rate"] - 0.05), 0.02,
+                        f"假阳性率应 ≈5%，实测 {cal['false_positive_rate']:.1%}")
+
+    def test_z的标准差约1(self):
+        """⚠️ z 的**尺度**必须对（均值 0、标准差 1）——只查假阳性率会漏掉尺度偏差。"""
+        a = self._normal(300, 0.0033, 3)
+        b = self._normal(400, 0.0033, 4)
+        cal = pooled_mc_calibration(a, b, delta=0.0, reps=2000, seed=8)
+        self.assertLess(abs(cal["sd_z"] - 1.0), 0.12,
+                        f"z 的标准差应 ≈1，实测 {cal['sd_z']:.3f}")
+        self.assertLess(abs(cal["mean_z"]), 0.1)
+
+    def test_注入大效应时几乎必然检出(self):
+        """⚠️ 分辨力补强：不能"永远报不显著"。"""
+        a = self._normal(300, 0.001, 5)
+        b = self._normal(400, 0.001, 6)
+        cal = pooled_mc_calibration(a, b, delta=0.01, reps=400, seed=9)
+        self.assertGreater(cal["false_positive_rate"], 0.99)
+
+    def test_固定种子可复现(self):
+        a = self._normal(200, 0.003, 11)
+        b = self._normal(200, 0.003, 12)
+        c1 = pooled_mc_calibration(a, b, reps=300, seed=99)
+        c2 = pooled_mc_calibration(a, b, reps=300, seed=99)
+        self.assertEqual(c1, c2)
+
+    def test_常量残差时不炸(self):
+        """σ=0 的极端输入不许抛（本项目对 σ=0 有专门的教训）。"""
+        cal = pooled_mc_calibration([0.0] * 50, [0.0] * 50, reps=20, seed=3)
+        self.assertEqual(cal["reps"], 0)     # 全部被"se>0"挡掉 ⇒ 分母为空
 
 
 if __name__ == "__main__":

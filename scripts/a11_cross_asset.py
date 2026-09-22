@@ -205,6 +205,50 @@ def kpi_bite(nets: list[float], target_return: float) -> dict[str, Any]:
             "slack": st.median(nets) - target_return}
 
 
+# ⭐⭐⭐ 合并统计量的**标定自检**（在宣布"显著"之前必须先做）
+def pooled_mc_calibration(resid_a: list[float], resid_b: list[float], *,
+                          delta: float = 0.0, reps: int = 4000,
+                          seed: int = 20260922) -> dict[str, Any]:
+    """把**已知真值 δ** 叠到两份真实残差上，看**合并后的 z** 标定得准不准。
+
+    ⚠️ 为什么非做不可：本轮第一次出现"合并后显著"（z≈−2.7）。
+    但**合并统计量是另一套机制**（逆方差加权 + 正态近似），
+    A10 只验过**单个标的的 t 区间**。若合并的 z 本身偏大，
+    那这个"显著"就是**装置造出来的**，不是数据里的。
+    ⇒ 判据：**δ=0 时 |z|>1.96 的比例应当 ≈5%**（假阳性率）。
+    """
+    import random
+    rng = random.Random(seed)
+    groups = []
+    for r in (resid_a, resid_b):
+        m = sum(r) / len(r)
+        groups.append([x - m for x in r])
+    hit = 0
+    zs: list[float] = []
+    for _ in range(reps):
+        ests = []
+        for g in groups:
+            n = len(g)
+            d = [g[rng.randrange(len(g))] + delta for _ in range(n)]
+            sd = (sum((x - sum(d) / n) ** 2 for x in d) / (n - 1)) ** 0.5
+            ests.append((sum(d) / n, sd / (n ** 0.5)))
+        w = [1.0 / (se ** 2) for _e, se in ests if se > 0]
+        sw = sum(w)
+        if sw <= 0:
+            continue
+        th = sum(wi * e for wi, (e, se) in zip(w, ests) if se > 0) / sw
+        se_p = (1.0 / sw) ** 0.5
+        z = th / se_p
+        zs.append(z)
+        if abs(z) > 1.96:
+            hit += 1
+    return {"reps": len(zs), "false_positive_rate": hit / len(zs) if zs else float("nan"),
+            "mean_z": (sum(zs) / len(zs)) if zs else float("nan"),
+            "sd_z": ((sum((x - sum(zs) / len(zs)) ** 2 for x in zs)
+                      / (len(zs) - 1)) ** 0.5) if len(zs) > 1 else float("nan"),
+            "seed": seed}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", default=str(OUTD / "cross_asset.json"))
@@ -312,13 +356,35 @@ def main() -> int:
     else:
         print(f"  {pl['note']}")
 
+    # ---- ⭐ 合并统计量的标定自检（宣布显著之前必须先做）----
+    if len(items) >= 2:
+        res = [_d for _nm, si in items for _d in [si.get("diffs") or []]]
+        if all(len(x) > 8 for x in res):
+            cal = pooled_mc_calibration(res[0], res[1], delta=0.0)
+            print("\n【标定自检】合并统计量在 δ=0 时的**假阳性率**")
+            print(f"  {cal['reps']} 次重采样：假阳性率 **{cal['false_positive_rate']:.1%}**"
+                  f"（目标 5%）；z 的均值 {cal['mean_z']:+.3f}，标准差 {cal['sd_z']:.3f}"
+                  f"（目标 1.000）")
+            if cal["false_positive_rate"] > 0.08:
+                print("  ⚠️ **偏大 ⇒ 报告里的「显著」要打折**")
+            elif cal["false_positive_rate"] < 0.02:
+                print("  ⚠️ 偏小 ⇒ 合并区间**偏宽**（过于保守）")
+            else:
+                print("  ✅ 标定良好 ⇒ 合并后的「显著」是可信的")
+            results_cal = cal
+        else:
+            results_cal = {}
+    else:
+        results_cal = {}
+
     outp = Path(args.json)
     outp.parent.mkdir(parents=True, exist_ok=True)
     outp.write_text(json.dumps(
         {"premise_ok": premise_ok,
          "per_instrument": [{"name": nm, **{k: v for k, v in s.items()
                                            if k != "diffs"}} for nm, s in items],
-         "pooled": pl, "kpi_bite": results_pilot},
+         "pooled": pl, "kpi_bite": results_pilot,
+         "pooled_calibration": results_cal},
         ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nJSON → {outp}")
     return 0

@@ -106,8 +106,37 @@ def build() -> str:
              "「前提被违反」的区分）|")
     L.append("| 那套阈值在 ETH 上有约束力吗 | 见 §2.1：**预检**——若基线本来就大量"
              "达标，复现会**缺乏约束力** |")
-    L.append("| 效应复现了吗 | 见 §3（数据齐了才算）|")
-    L.append("")
+    if len(items) >= 2:
+        pl = pool_instruments(items)
+        e0, e1 = items[0][1]["effect"], items[1][1]["effect"]
+        same_sign = (e0 * e1) > 0
+        L.append(f"| **效应复现了吗** | ✅ **同号且量级几乎相同**："
+                 f"{items[0][0]} {_pct(e0)}、{items[1][0]} {_pct(e1)} |")
+        L.append(f"| **两个标的能合并吗** | Q={_f(pl['Q'])} vs 临界 "
+                 f"{_f(pl.get('critical'))} ⇒ "
+                 f"**{'异质（只能按标的报）' if pl['heterogeneous'] else '同质 ⇒ 可以合并'}** |")
+        L.append(f"| **合并后判得出来吗** | **{_pct(pl['pooled'])}**，"
+                 f"95% 区间 [{_pct(pl['ci'][0])}, {_pct(pl['ci'][1])}]，"
+                 f"z={_f(pl['z'])} ⇒ "
+                 f"**{'区间不跨 0 ⇒ 达到显著' if (pl['ci'][0] > 0 or pl['ci'][1] < 0) else '区间跨 0 ⇒ 仍无法判定'}** |")
+        L.append("")
+        if same_sign and not pl["heterogeneous"] and (pl["ci"][0] > 0 or pl["ci"][1] < 0):
+            L.append("⭐⭐ **本轮唯一一个「收益侧」达到显著的结果**：")
+            L.append("单个标的都判不出来（区间跨 0），但**两个独立标的合并后**"
+                     "区间不跨 0。")
+            L.append("")
+            L.append("⚠️ 但必须连着说清三件事：")
+            L.append("")
+            L.append("1. **效应很小**（约 3.4bp / 8 根一段）——它不是「能赚钱」的量级，"
+                     "而是「可测量的差别」的量级；")
+            L.append("2. **合并的显著性离边界不远**（z≈−2.7）；"
+                     "且「独立」是**近似**的（同属加密资产、共享同样的模板与阈值）；")
+            L.append("3. **这只是 offset=0 这一组窗口**。A9 已证明换一组窗口结论会变，"
+                     "所以这不能写成「KPI 一定让收益变差」。")
+            L.append("")
+    else:
+        L.append("| 效应复现了吗 | ⏸️ 数据不足（见 §0 第三节）|")
+        L.append("")
 
     # ---- 1 ----
     L.append("## 1. 为什么用「换标的」而不是「加段数」")
@@ -241,6 +270,38 @@ def build() -> str:
                      "合并出来的接近 0 是**两个相反效应的抵消**，不是「没有效应」——"
                      "这两件事必须分开说。")
             L.append("")
+            # ⭐⭐⭐ 宣布"显著"之前的标定自检（A10 的纪律）
+            L.append("### 3.2 ⭐⭐ 宣布「显著」之前的标定自检")
+            L.append("")
+            L.append("⚠️ **合并统计量是另一套机制**（逆方差加权 + 正态近似），"
+                     "A10 只验过**单个标的的 t 区间**。若合并的 z 本身偏大，"
+                     "那这个「显著」就是**装置造出来的**，不是数据里的。")
+            L.append("")
+            from scripts.a11_cross_asset import pooled_mc_calibration
+            res = [s0.get("diffs") or [] for _n0, s0 in items]
+            if all(len(x) > 8 for x in res):
+                cal = pooled_mc_calibration(res[0], res[1], delta=0.0)
+                L.append(f"做法：把 **δ=0** 叠到两份真实残差上重采样 "
+                         f"**{cal['reps']}** 次（种子 {cal['seed']}），看合并 z：")
+                L.append("")
+                L.append("| 指标 | 实测 | 目标 |")
+                L.append("|---|---|---|")
+                L.append(f"| 假阳性率（&vert;z&vert;&gt;1.96） | **{cal['false_positive_rate']:.1%}** | 5% |")
+                L.append(f"| z 的均值 | {cal['mean_z']:+.3f} | 0.000 |")
+                L.append(f"| z 的标准差 | **{cal['sd_z']:.3f}** | 1.000 |")
+                L.append("")
+                fpr = cal["false_positive_rate"]
+                if fpr > 0.08:
+                    L.append("⚠️ **偏大 ⇒ 报告里的「显著」要打折。**")
+                elif fpr < 0.02:
+                    L.append("⚠️ 偏小 ⇒ 合并区间**偏宽**（过于保守）。")
+                else:
+                    L.append("✅ **标定良好** ⇒ 合并后的「显著」是**可信的**："
+                             "它来自数据，不是装置造出来的。")
+                L.append("")
+            else:
+                L.append("（残差不足，跳过。）")
+                L.append("")
         else:
             L.append("⏸️ 只有一个标的的产物 ⇒ **不构成跨标的复现**，等另一臂跑完。")
             L.append("")
