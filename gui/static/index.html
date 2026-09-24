@@ -185,6 +185,7 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
         <div class="pills" id="kindPills">
           <button data-kind="strategy" class="on">策略实验</button>
           <button data-kind="market">纯市场</button>
+          <button data-kind="doc_strategy">文档策略</button>
         </div>
       </div>
       <div class="field">
@@ -226,6 +227,36 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
         <div><label>初始现金</label><input type="number" id="cash" value="18000000"></div>
         <div><label>初始持仓</label><input type="number" id="inv" value="0" step="1"></div>
       </div>
+    </div>
+
+    <div class="sec" id="docSec" style="display:none">
+      <h2>文档策略（A14~A16）</h2>
+      <div class="field">
+        <label>标的</label>
+        <select id="docInst">
+          <option value="BTCUSDT">BTC</option>
+          <option value="ETHUSDT">ETH</option>
+          <option value="SOLUSDT">SOL</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>策略</label>
+        <select id="docStrategy">
+          <option value="grid_doc">网格（左尾 · A14 规格）</option>
+          <option value="righttail_doc">右尾（突破 10:1 · 手册 §11）</option>
+        </select>
+        <div class="hint">网格：等比格位+初始半仓+21天无成交离场；右尾：突破入场，止损2%/止盈20%（10:1）</div>
+      </div>
+      <div class="row field">
+        <div><label>k（区间）</label><input type="number" id="docK" value="0.25" step="0.05"></div>
+        <div><label>格数 N</label><input type="number" id="docN" value="10" step="1"></div>
+      </div>
+      <div class="row field">
+        <div><label>止损</label><input type="number" id="docStop" value="0.02" step="0.01"></div>
+        <div><label>止盈</label><input type="number" id="docTarget" value="0.20" step="0.05"></div>
+      </div>
+      <div class="field"><label>本金</label><input type="number" id="docCash" value="100000"></div>
+      <div class="hint">数据：market.sqlite 真实 1H × 2 年；成本 maker 2bp / 市价 5bp+滑点 1bp；连续一段不切分</div>
     </div>
 
     <div class="sec">
@@ -280,6 +311,7 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
       <button data-tab="compare">对照</button>
       <button data-tab="real">真实比对</button>
       <button data-tab="agent">Agent 决策</button>
+      <button data-tab="docverify">文档验证</button>
     </nav>
     <div id="pane">
       <div class="tabpane on" id="tab-overview"></div>
@@ -289,6 +321,7 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
       <div class="tabpane" id="tab-compare"></div>
       <div class="tabpane" id="tab-real"></div>
       <div class="tabpane" id="tab-agent"></div>
+      <div class="tabpane" id="tab-docverify"></div>
     </div>
   </main>
 </div>
@@ -727,6 +760,18 @@ function collectSpec(kind) {
     ticks: Number($("#ticks").value) || 1000,
     warmup: Number($("#warmup").value) || 0,
   };
+  if (kind === "doc_strategy") {
+    return {
+      kind,
+      instrument: $("#docInst").value,
+      doc_strategy: $("#docStrategy").value,
+      k: Number($("#docK").value) || 0.25,
+      n: Number($("#docN").value) || 10,
+      stop_pct: Number($("#docStop").value) || 0.02,
+      target_pct: Number($("#docTarget").value) || 0.20,
+      cash: Number($("#docCash").value) || 100000,
+    };
+  }
   if (kind === "strategy") {
     spec.cash = Number($("#cash").value) || 0;
     spec.inventory = Number($("#inv").value) || 0;
@@ -852,6 +897,36 @@ function switchTab(name) {
 function renderAll() {
   renderOverview(); renderCharts(); renderMetrics();
   renderStrategyTab(); renderCompare(); renderReal(); renderAgent();
+  renderDocVerify();
+}
+
+async function renderDocVerify() {
+  const box = $("#tab-docverify");
+  box.innerHTML = "";
+  box.append(el("div", { class: "desc" }, "载入中…"));
+  try {
+    const d = await api("/api/doc/reports");
+    box.innerHTML = "";
+    box.append(card("两份文档的验证状态（A14/A15/A16）",
+      "《个人交易决策系统方案》（左尾网格）与《右尾策略完全手册》已由本项目独立验证。"
+      + "下表是三份验证报告的要点与文件位置。", null,
+      ...d.reports.map((rp) => {
+        const bits = [];
+        if (rp.summary) {
+          for (const [k, v] of Object.entries(rp.summary)) {
+            bits.push(`<b>${esc(k)}</b> = ${esc(JSON.stringify(v))}`);
+          }
+        }
+        return el("div", { class: "note", html:
+          `<b>${esc(rp.title)}</b>　` +
+          (rp.report_exists ? '<span class="tag good">报告在</span>' : '<span class="tag bad">报告缺失</span>') + "　" +
+          (rp.json_exists ? '<span class="tag good">结果数据在</span>' : '<span class="tag bad">结果缺失</span>') +
+          (bits.length ? "<br>" + bits.join("　·　") : "") +
+          (rp.report_exists ? `<br>报告：<code>docs/${esc(rp.report_file)}</code>` : "") }));
+      })));
+  } catch (e) {
+    box.append(el("div", { class: "note bad" }, "载入失败：" + e.message));
+  }
 }
 function emptyBox(title, tips) {
   return el("div", { class: "empty" },
@@ -959,6 +1034,34 @@ function renderOverview() {
         "「价差捕获」只有 <b>−1,699</b>——剩下全是建仓期间市场涨了。" +
         "只看合计会把平庸的执行算法看成优秀策略。" }),
     ));
+  }
+  if (r.kind === "doc_strategy") {
+    box.append(card("文档策略实测（A16）",
+      `策略 <b>${esc(r.strategy_label)}</b>　标的 <b>${esc(r.instrument)}</b>　` +
+      `1x　连续 2 年　成交 ${fmt(r.n_fills, 0)} 笔　用时 ${fmt(r.wall_sec, 1)}s`,
+      el("div", { class: "kpis" },
+        kpi("年化", fmtSigned(r.annualized * 100, 1), "%", signedClass(r.annualized)),
+        kpi("最大回撤", fmt(r.max_drawdown * 100, 1), "%", "bad"),
+        kpi("交易数", fmt(r.n_trades, 0)),
+        kpi("胜率", fmt((r.win_rate || 0) * 100, 0), "%"),
+        kpi("盈亏偏度", fmt(r.skew, 2), "", r.skew < -1 ? "warn" : (r.skew > 1 ? "good" : "")),
+        kpi("E/笔", fmtSigned(r.E_per_trade, 1), "元", signedClass(r.E_per_trade)),
+        kpi("手续费", fmt(r.fees, 0), "元", "bad"),
+        kpi("B&H 年化", fmtSigned((r.bh_annualized || 0) * 100, 1), "%"),
+      ),
+      el("div", { class: "note", html:
+        "<b>怎么读：</b><b>偏度</b>是这个策略的「形状」——" +
+        "负 = 左尾厚（网格：大量小赢 + 罕见大亏），" +
+        "正 = 右尾厚（突破：大量小止损 + 罕见大赢）。" +
+        "这是文档 §9「左右尾期望都是 0，换的只是形状」的可测量形式。<br>" +
+        "<b>期望</b>：扣成本后为负 = 手册的结论（p≈0.5 时任何结构都不产生期望，成本是唯一确定性变量）。" +
+        "右尾的打平线 = 1/(1+赔率)，本实现 10:1 ⇒ 9.1%。" }),
+      el("div", { class: "note", html:
+        `<b>对照：</b>买入持有年化 ${fmtSigned((r.bh_annualized || 0) * 100, 1)}%。` +
+        `A14 独立回测的同策略中位年化 +1.1%（18 配置）——量级互证。` }),
+    ));
+    box.append(historyCard());
+    return;
   }
   box.append(historyCard());
 }
@@ -1631,6 +1734,7 @@ $$("#kindPills button").forEach((b) => b.onclick = () => {
   State.kind = b.dataset.kind;
   $$("#kindPills button").forEach((x) => x.classList.toggle("on", x === b));
   $("#strategySec").style.display = State.kind === "strategy" ? "" : "none";
+  $("#docSec").style.display = State.kind === "doc_strategy" ? "" : "none";
 });
 $("#useCode").onchange = (e) => {
   $("#codeWrap").style.display = e.target.checked ? "" : "none";

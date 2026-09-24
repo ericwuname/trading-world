@@ -246,6 +246,8 @@ class Handler(BaseHTTPRequestHandler):
             if job is None:
                 return self._err(404, "作业不存在")
             return self._json(job.public())
+        if path == "/api/doc/reports":
+            return self._json(api.doc_reports_payload())
         if path.startswith("/api/real/"):
             return self._json(api.real_payload(path[len("/api/real/") :]))
         # ---- A5：Agent 决策留痕（**只读**，路径不接受用户输入）--------
