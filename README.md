@@ -752,7 +752,7 @@ gui/            ⭐  桌面端
   desktop.py         pywebview 窗口，失败自动退回浏览器
   static/index.html  单文件前端（零外部依赖，图表手写 canvas）
 
-tests/              1610 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
+tests/              1614 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
                     + 数据层与 MCP + A1 订单模型与账户 + A2 留痕与风控 + A3 LLM 接入
                     + A4 执行与评估 + A5 GUI 集成 + A6 多段配对度量 / 结果回填 / KPI / 复盘归因与经验库）
                     ↑ 这个数字由 `scripts/selfcheck.py` 的 ③b 项与
