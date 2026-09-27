@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from . import __version__, agent_api, api  # noqa: E402
+from . import __version__, agent_api, api, routes  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -74,24 +74,6 @@ def _inject_agent_preload(html: bytes, query: dict,
     tag = ('<script id="agentPreload" type="application/json">'
            + blob + "</script>\n</body>")
     return html.decode("utf-8").replace("</body>", tag, 1).encode("utf-8")
-
-
-def _qint(query: dict, key: str, default: int) -> int:
-    """从 ``parse_qs`` 的结果里取一个整数。
-
-    ⚠️ ``parse_qs`` 的值一律是**列表**（同一参数可以出现多次），
-    所以 ``int(query.get(k))`` 会抛 TypeError，而用户看到的是
-    **HTTP 500** 而不是"参数写错了"——把甲方错误报成服务端错误，
-    排查方向会被带偏。这里显式取第一个值，并给出可读的 400。
-    """
-    v = query.get(key)
-    if v is None:
-        return int(default)
-    first = v[0] if isinstance(v, (list, tuple)) and v else v
-    try:
-        return int(str(first).strip() or default)
-    except (TypeError, ValueError):
-        raise ValueError(f"{key} 必须是整数，收到 {first!r}") from None
 
 
 #: 端口 0 = 让系统分配空闲端口。写死端口会在"上一次没退干净"时启动失败，
@@ -169,9 +151,10 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/"):
                 if not self._token_ok(query):
                     return self._err(403, "缺少或错误的访问令牌 —— 请通过启动器打开界面")
-                if method == "POST":
-                    return self._api_post(path, self._read_json())
-                return self._api_get(path, query)
+                # ⚠️ 解析请求体是**传输层**的事（长度上限、JSON 合法性），
+                #    所以留在这里；"这个 URL 归谁"是路由表的事。
+                body = self._read_json() if method == "POST" else {}
+                return self._api(method, path, query, body)
             return self._err(404, "没有这个路径")
         except api.ApiError as exc:
             self._err(exc.status, exc.message)
@@ -225,90 +208,49 @@ class Handler(BaseHTTPRequestHandler):
             ctype += "; charset=utf-8"
         self._send(200, body, ctype)
 
-    # --- API: GET -----------------------------------------------------
-    def _api_get(self, path: str, query: dict) -> None:
-        mgr = self.server.manager  # type: ignore[attr-defined]
-        if path == "/api/meta":
-            return self._json(api.meta())
-        if path == "/api/jobs":
-            return self._json({"jobs": [j.public(with_result=False) for j in mgr.list()],
-                               "stats": mgr.stats()})
-        if path.startswith("/api/job/"):
-            rest = path[len("/api/job/") :]
-            if rest.endswith("/series"):
-                job = mgr.get(rest[: -len("/series")])
-                if job is None:
-                    return self._err(404, "作业不存在")
-                if job.series is None:
-                    return self._json({"ready": False, "state": job.state})
-                return self._json({"ready": True, "series": job.series})
-            job = mgr.get(rest)
-            if job is None:
-                return self._err(404, "作业不存在")
-            return self._json(job.public())
-        if path == "/api/doc/reports":
-            return self._json(api.doc_reports_payload())
-        if path.startswith("/api/real/"):
-            return self._json(api.real_payload(path[len("/api/real/") :]))
-        # ---- A5：Agent 决策留痕（**只读**，路径不接受用户输入）--------
-        if path == "/api/agent/runs":
-            return self._json(agent_api.list_runs(ROOT))
-        if path.startswith("/api/agent/run/"):
-            rest = path[len("/api/agent/run/") :]
-            try:
-                if rest.endswith("/decisions"):
-                    rid = rest[: -len("/decisions")]
-                    # ⚠️ ``parse_qs`` 的值是**列表**（同一参数可出现多次）。
-                    # 直接 ``int(query.get(...))`` 会抛 TypeError →
-                    # 用户看到的是 500，而不是"参数写错了"。
-                    return self._json(agent_api.decisions_page(
-                        ROOT, rid,
-                        offset=_qint(query, "offset", 0),
-                        limit=_qint(query, "limit", 50),
-                    ))
-                if rest.endswith("/summary"):
-                    return self._json(agent_api.run_summary(
-                        ROOT, rest[: -len("/summary")]))
-                if "/decision/" in rest:
-                    rid, _, idx = rest.partition("/decision/")
-                    return self._json(agent_api.decision_detail(ROOT, rid, int(idx)))
-                return self._json(agent_api.run_summary(ROOT, rest))
-            except KeyError as e:
-                return self._err(404, str(e))
-            except ValueError as e:
-                return self._err(400, f"参数不合法：{e}")
-        if path.startswith("/api/export/"):
-            name = path[len("/api/export/") :]
-            job_id = name[:-4] if name.endswith(".csv") else name
-            job = mgr.get(job_id)
-            if job is None:
-                return self._err(404, "作业不存在")
-            csv = api.export_csv(job).encode("utf-8-sig")  # BOM：Excel 打开中文不乱码
-            return self._send(
-                200, csv, "text/csv; charset=utf-8",
-                {"Content-Disposition": f'attachment; filename="tw-{job_id}.csv"'},
-            )
-        return self._err(404, "没有这个接口")
+    # --- API ----------------------------------------------------------
+    def _api(self, method: str, path: str, query: dict, body: dict) -> None:
+        """查路由表 → 建上下文 → 调用 → 序列化。**这里是唯一的 API 入口。**
 
-    # --- API: POST ----------------------------------------------------
-    def _api_post(self, path: str, body: dict) -> None:
-        mgr = self.server.manager  # type: ignore[attr-defined]
-        if path == "/api/run":
-            # ⚠️ kind 的归一化与校验**只在 api 里做一次**（`api.check_kind` /
-            # `api.validate_spec`）。这里不要自己 `body.get("kind") or "..."`——
-            # 那会造出第三份"默认值 + 白名单"的实现，正是这个项目踩过的坑
-            # （两份同名报错互相遮挡）。让 validate_spec 全权负责。
-            body["kind"] = api.check_kind(body)
-            # 提交前先全量校验：参数错了要在**毫秒内**告诉用户，
-            # 而不是让他等作业跑完再从日志里翻原因。
-            api.validate_spec(body)
-            job = mgr.submit(body["kind"], body, api.execute)
-            return self._json({"job_id": job.id, "kind": body["kind"]}, 202)
-        if path.startswith("/api/job/") and path.endswith("/cancel"):
-            job_id = path[len("/api/job/") : -len("/cancel")]
-            ok = mgr.cancel(job_id)
-            return self._json({"cancelled": ok})
-        return self._err(404, "没有这个接口")
+        ⚠️ 不要在下面加 `if path == ...` 分支。加端点的做法是在
+        `gui/api.py` / `api_doc.py` / `agent_api.py` 里用 `@route` 声明，
+        URL 与处理函数写在一起（登记表见 `gui/routes.py`）。
+        理由是"两份实现迟早分叉"的老账：原来 URL 映射在这里、
+        处理函数在业务模块里，加一个端点要改两处，
+        **只改一处不报错、只是那端点永远 404**。
+        """
+        hit = routes.try_match(method, path)
+        if hit is None:
+            return self._err(404, f"没有这个接口：{method} {path}")
+        rt, m = hit
+        ctx = routes.Ctx(
+            method=method, path=path, query=query, body=body,
+            root=ROOT, mgr=self.server.manager,  # type: ignore[attr-defined]
+            params=m.groupdict(),
+        )
+        try:
+            out = rt.handler(ctx)
+        except api.ApiError as exc:
+            # 业务错误：状态码与文案都由抛的人决定（前端直接展示 message）
+            return self._err(exc.status, exc.message)
+        except Exception as exc:  # noqa: BLE001
+            status = next(
+                (v for k, v in rt.errors.items() if isinstance(exc, k)), None
+            )
+            if status is None:
+                # ⚠️ **未声明的异常照旧冒到 500**（带 traceback）。
+                #    别在这里做"没声明就按 400 处理"的兜底——
+                #    那会把服务端 bug 伪装成"你的输入有问题"，
+                #    排查方向直接被带偏。
+                raise
+            return self._err(status, str(exc))
+
+        if isinstance(out, routes.Response):
+            return self._send(out.status, out.body, out.ctype, out.headers)
+        if isinstance(out, tuple):
+            payload, code = out
+            return self._json(payload, code)
+        return self._json(out)
 
 
 class _Server(ThreadingHTTPServer):

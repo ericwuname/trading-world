@@ -2084,6 +2084,77 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M127',
+        '**端点忘了挂 `@route` 装饰器**（`/api/doc/reports` 那条）——'
+        '函数写得完全正确、测试直接调它也过，'
+        '但**没有任何 URL 会命中它**：前端那个「文档验证」标签页'
+        '永远显示"载入中…"，而服务端日志一切正常。'
+        '⭐ 判据：**端点的"可访问性"必须被单独测**——'
+        '只测"处理函数返回了什么"永远发现不了"它根本没挂上"。'
+        '⚠️ 这条变异体的第一版是"删掉 `routes.py` 登记块里的 '
+        '`from . import agent_api`"，实测**仍全绿**：'
+        '因为 `server.py` 自己也 import 了 agent_api，那行**不是**触发点。'
+        '**那不是"测试漏了"，是我的判断错了** —— 那次全绿逼我把注释改对了。'
+        '⚠️ 全绿时要区分这两种情况：「测试没盯住」还是「我假设的 bug 不存在」。',
+        [
+            (
+                'gui/api_doc.py',
+                '@route("GET", "/api/doc/reports")\ndef api_doc_reports(ctx: Ctx) -> dict:\n',
+                'def api_doc_reports(ctx: Ctx) -> dict:\n',
+            ),
+        ],
+    ),
+    (
+        'M128',
+        '**路由用 `match`（前缀）而不是 `fullmatch`（整条）**——'
+        '于是 `/api/meta/x`、`/api/jobs/extra` 也会命中 `/api/meta`、`/api/jobs`，'
+        '返回 200。'
+        '⚠️ 这种错**很难被注意到**（多打一段路径居然还成功），'
+        '而它是后面加子路径时踩雷的起点：`/api/job/<id>` 会开始吃掉 '
+        '`/api/job/<id>/series`（谁先注册谁赢），表现为"时序图偶尔取不到数"。'
+        '⭐ 判据：**"命中"必须包含"吃满整条路径"**，不能只匹配前缀。',
+        [
+            (
+                'gui/routes.py',
+                '        hit = r.regex().fullmatch(path)\n',
+                '        hit = r.regex().match(path)\n',
+            ),
+        ],
+    ),
+    (
+        'M129',
+        '**CSV 导出丢掉 `Content-Disposition`**——'
+        '状态码 200、内容也完全正确，但浏览器会在**标签页里直接打开** CSV，'
+        '用户拿不到文件、文件名也没了。'
+        '⚠️ 这是"看起来成功、实际没达成目的"的一类：'
+        '只看状态码与 body 的测试**永远发现不了**，只有响应头能证明它。'
+        '（同理 BOM 也只能在字节层面看——少了它 Excel 打开中文乱码。）',
+        [
+            (
+                'gui/api.py',
+                '        headers={"Content-Disposition": f\'attachment; filename="tw-{jid}.csv"\'},\n',
+                '        # 导出不需要额外响应头\n',
+            ),
+        ],
+    ),
+    (
+        'M130',
+        '**`try_match` 不再筛 method**——'
+        '于是 `POST /api/meta` 也会命中那条 GET 路由，'
+        '一个"只读接口"变成了任何方法都能打的入口。'
+        '⚠️ 这与 M129/M128 是同一族的**静默故障**：'
+        '不报错、返回还有内容，只是语义契约被悄悄放开了。'
+        '⭐ 判据：**路由表里的 method 是契约的一部分**'
+        '（`agent_api` 那一组按设计只有 GET，见 `TestRoutes.test_agent那组是只读的`）。',
+        [
+            (
+                'gui/routes.py',
+                '        if r.method != m:\n            continue\n',
+                '',
+            ),
+        ],
+    ),
 ]
 
 

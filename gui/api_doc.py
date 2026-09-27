@@ -14,6 +14,9 @@
 `run_doc_strategy` 的登记（`@register_kind`）放在这里，`api.py` 底部
 显式 `import gui.api_doc` 一行来触发它——注册表 (KINDS) 仍然是**唯一
 事实源**，只是登记动作由各模块自己做。
+
+⭐ 同理，`/api/doc/reports` 这条路由也用 `@route` 在**本模块**声明
+（登记表在 `gui/routes.py`），而不是写在 `server.py` 的分支里。
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from .api import (  # noqa: F401  (部分是为了 re-export 给测试/调用方
     register_kind,
 )
 from .jobs import Job
+from .routes import Ctx, route
 
 #: 文档策略只在这三个标的上实跑（与 A16 报告一致；换标的要先确认数据在库）
 _DOC_INSTRUMENTS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
@@ -206,3 +210,18 @@ def doc_reports_payload() -> dict:
                 item["error"] = str(exc)
         reports.append(item)
     return {"reports": reports}
+
+
+# ======================================================================
+# 路由声明
+# ======================================================================
+# ⭐ URL 与处理函数写在一起（见 `gui/routes.py`）。原来是
+#    `server.py` 里一句 `if path == "/api/doc/reports"` ——
+#    端点多了之后，"哪个 URL 归谁"就散在 server 里了。
+#
+# ⚠️ 这是**全局页**：与当前作业无关（A14/A15/A16 三份报告是磁盘上的
+#    既有产物）。前端把它单独分了一组标签，别混进作业结果里。
+@route("GET", "/api/doc/reports")
+def api_doc_reports(ctx: Ctx) -> dict:
+    """A14/A15/A16 三份验证报告的摘要。"""
+    return doc_reports_payload()

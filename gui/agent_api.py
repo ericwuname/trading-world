@@ -16,6 +16,15 @@
 3. **大文件要分页。** 一条决策留痕含完整 ``llm_raw`` 与
    ``visible_state``，几百条就是几 MB。一次性返回会把浏览器拖死，
    而且**看不出慢在哪**。⇒ 列表只回摘要，正文按需取单条。
+
+⭐ 与作业队列的关系（别搞混）
+----------------------------
+这组端点**不进** ``api.KINDS``，因为 ``KINDS`` 是"**作业类型**"表：
+提交进队列、有进度、可取消、会写产物。而本模块按第 2 条约定
+**只读、不起作业**。统一的是另一件事 —— **URL 在哪里定义**：
+全部端点的登记表在 `gui/routes.py`，本模块用 ``@route`` 自己声明
+自己那四条（原来它们写在 ``server.py`` 的一串 ``if path.startswith``
+里，加一条要点两处文件）。
 """
 
 from __future__ import annotations
@@ -27,6 +36,8 @@ from typing import Any
 
 from tw import eval_agent as _eval_agent
 from tw.decision_log import DecisionLog
+
+from .routes import ApiError, Ctx, query_int, route
 
 #: 扫描哪些目录找产物。**固定清单，不由用户提供。**
 #: 相对项目根目录。
@@ -108,10 +119,10 @@ def discover(root: Path | str) -> list[RunEntry]:
         d = root / rel
         if not d.is_dir():
             continue
-        for pat in _DEC_PATTERNS:
-            for f in sorted(d.glob(pat)):
-                # 排除 `.jsonl.gz` 被 `*.jsonl*` 匹配两次的情况由 set 处理
-                pass
+        # ⚠️ 必须用 seen 去重：`*.jsonl*` 与 `*.jsonl.gz` 两个模式
+        # 会把 `.jsonl.gz` 匹配两次（前者是后者的子集）。
+        # （原来这里还有一段"只排序不收集"的空循环 —— 死代码，
+        #   已删：它不产生任何效果，只会让读的人以为去重在那里做。）
         seen: set[Path] = set()
         for pat in _DEC_PATTERNS:
             for f in sorted(d.glob(pat)):
@@ -418,6 +429,65 @@ def first_paint(root: Path | str, run_id: str = "", *,
     }
 
 
+# ======================================================================
+# 路由声明（`@route` 的形状与 `api.py` / `api_doc.py` 完全一致）
+# ======================================================================
+# ⚠️ 这里**只有 GET**。本模块按模块文档第 2 条约定是**只读**的：
+#    想跑一段 Agent，走 `/api/run`（作业队列）。给这里加一个 POST
+#    等于给"读数据"开了写入口，是这套设计里最不该破的一条。
+#
+# ⚠️ `errors={KeyError: 404}`：取"不存在的 run"是**用户的输入问题**，
+#    该回 404 而不是 500 的 traceback。但**只声明这一种**——
+#    其余异常照旧冒到 500，否则内部 bug 会被伪装成"你要的东西不存在"。
+#
+# ⚠️ 路径参数用 `[^/]+` 而不是 `.+`：前者**不可能**含 `/`，
+#    所以 `rid` 永远不会变成 `a/b` 这种带路径分隔符的东西。
+#    （虽然 `discover` 本来就只在扫描结果里查，这是第二道锁。）
+
+
+@route("GET", "/api/agent/runs")
+def api_agent_runs(ctx: Ctx) -> dict:
+    """可浏览的运行清单。"""
+    return list_runs(ctx.root)
+
+
+@route("GET", "/api/agent/run/(?P<rid>[^/]+)/summary", errors={KeyError: 404})
+def api_agent_summary(ctx: Ctx) -> dict:
+    """某 run 的汇总：条数、动作分布、风控分布、权益曲线。"""
+    return run_summary(ctx.root, ctx.params["rid"])
+
+
+@route("GET", "/api/agent/run/(?P<rid>[^/]+)/decisions", errors={KeyError: 404})
+def api_agent_decisions(ctx: Ctx) -> dict:
+    """决策**摘要**分页（不含 ``llm_raw``/``visible_state``，见模块文档第 3 条）。"""
+    return decisions_page(
+        ctx.root, ctx.params["rid"],
+        offset=query_int(ctx.query, "offset", 0),
+        limit=query_int(ctx.query, "limit", 50),
+    )
+
+
+@route("GET", "/api/agent/run/(?P<rid>[^/]+)/decision/(?P<n>[^/]+)",
+       errors={KeyError: 404})
+def api_agent_decision(ctx: Ctx) -> dict:
+    """单条决策的证据链（六项分组）。"""
+    raw = ctx.params["n"]
+    # 自己判而不是让 int() 抛：`int()` 的消息是
+    # "invalid literal for int() with base 10: 'x'"，对用户是噪音。
+    if not raw.isdigit():
+        raise ApiError(f"决策序号必须是非负整数，收到 {raw!r}")
+    return decision_detail(ctx.root, ctx.params["rid"], int(raw))
+
+
+#: ⚠️ 必须放在 `.../summary`、`.../decisions` 之后注册：虽然匹配用的是
+#: `fullmatch`（`[^/]+` 吃不下 `/`，所以前缀冲突本不会发生），
+#: 但把较短的规则放最后，`describe()` 的输出顺序与人的预期一致。
+@route("GET", "/api/agent/run/(?P<rid>[^/]+)", errors={KeyError: 404})
+def api_agent_run(ctx: Ctx) -> dict:
+    """不带后缀 = 汇总（保持与旧 URL 的兼容）。"""
+    return run_summary(ctx.root, ctx.params["rid"])
+
+
 __all__ = [
     "RUN_DIRS",
     "MAX_PAGE",
@@ -432,4 +502,10 @@ __all__ = [
     "basis_distribution",
     "first_paint",
     "progress",
+    # 路由 handler（HTTP 面）
+    "api_agent_runs",
+    "api_agent_summary",
+    "api_agent_decisions",
+    "api_agent_decision",
+    "api_agent_run",
 ]

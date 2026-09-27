@@ -15,6 +15,7 @@ HTTP 层的测试会真的起一个服务，用无代理的 opener 直连回环�
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import unittest
@@ -45,7 +46,7 @@ _SCRIPTS_DIR = str(ROOT / "scripts")
 while _SCRIPTS_DIR in sys.path:
     sys.path.remove(_SCRIPTS_DIR)
 
-from gui import api  # noqa: E402
+from gui import agent_api, api, api_doc, routes  # noqa: E402
 from gui.jobs import CHUNK, Job, JobManager  # noqa: E402
 from gui.server import GuiServer  # noqa: E402
 from tw.scenarios import SCENARIOS  # noqa: E402
@@ -241,6 +242,80 @@ class TestApiValidate(unittest.TestCase):
         for r in d["reports"]:
             self.assertIn("report_exists", r)
             self.assertIn("json_exists", r)
+
+
+class TestRoutes(unittest.TestCase):
+    """⭐ 「URL ↔ 处理函数」必须只有**一处**事实源 —— 钉住路由表的登记。
+
+    原来 URL 映射写在 `server.py::_api_get/_api_post` 的一串
+    `if path == ...` / `if path.startswith(...)` 里，而处理函数住在
+    `api.py` / `api_doc.py` / `agent_api.py`。于是加一个端点要改两个文件，
+    而**只改一处不会报错**——只会得到一个"函数写好了但谁也调不到"的 404。
+    这与 `KINDS` 的两份白名单是**同一类**失效（本项目被坑过半小时的那个），
+    所以修法也一样：一处登记、其余派生。
+
+    这个类的重点不是"URL 拼对了"，而是**"登记确实生效了"** ——
+    只测"文件能被导入"是测不到这类问题的（拆模块之后，模块级副作用
+    由谁触发才是坏点）。
+    """
+
+    def test_三个业务模块都贡献了路由(self) -> None:
+        """⚠️ 从各模块自己的函数名反推，**不在这里重抄一遍 URL 清单** ——
+        否则测试自己就变成了第二份事实源，而两份迟早分叉。"""
+        names = {r.name for r in routes.ROUTES}
+        for fn in (api.api_meta, api.api_run, api.api_job, api.api_job_series,
+                   api.api_jobs, api.api_job_cancel, api.api_real, api.api_export,
+                   api_doc.api_doc_reports, agent_api.api_agent_runs,
+                   agent_api.api_agent_summary, agent_api.api_agent_decisions,
+                   agent_api.api_agent_decision, agent_api.api_agent_run):
+            self.assertIn(fn.__name__, names, f"{fn.__name__} 没被登记进路由表")
+
+    def test_每条路由都能被自己的模式匹配到(self) -> None:
+        """从 pattern **推导**出一个具体路径，再要求它命中同一条路由。
+
+        这样就不用手工维护"示例路径"清单（那又是一份会过时的副本）。
+        """
+        for r in routes.ROUTES:
+            path = re.sub(r"\(\?P<(\w+)>[^)]*\)", lambda m: m.group(1), r.pattern)
+            hit = routes.try_match(r.method, path)
+            self.assertIsNotNone(hit, f"{r} 匹配不到自己推导出的 {path}")
+            self.assertIs(hit[0], r, f"{path} 命中了 {hit[0]}，不是 {r}")
+
+    def test_整条路径才算命中(self) -> None:
+        """⚠️ 用 `match`（前缀）而不是 `fullmatch` 会让 `/api/meta/x` 也返回 200。
+        那种错很难被注意到，却是后面加子路径时踩雷的起点。"""
+        self.assertIsNone(routes.try_match("GET", "/api/meta/x"))
+        self.assertIsNone(routes.try_match("GET", "/api/jobs/extra"))
+
+    def test_方法不匹配就找不到(self) -> None:
+        self.assertIsNone(routes.try_match("POST", "/api/meta"))
+        self.assertIsNone(routes.try_match("GET", "/api/run"))
+
+    def test_重复登记会被拒(self) -> None:
+        """表里出现两条同模式的规则 = 后一条永远轮不到，**静默失效**。"""
+        with self.assertRaises(RuntimeError):
+            routes.route("GET", "/api/meta")(lambda ctx: {})
+        # 同一个函数被登记两次（名字撞了）也要拒
+        with self.assertRaises(RuntimeError):
+            routes.route("GET", "/api/brand-new-endpoint")(api.api_meta)
+
+    def test_agent那组是只读的(self) -> None:
+        """⭐ `KINDS` 是"作业类型"表，agent 接口按设计**只读、不起作业**。
+        它们共用的是"URL 在哪定义"这件事，不是同一张表。
+        所以：agent 前缀下**一条 POST 都不该有**。"""
+        for r in routes.ROUTES:
+            if r.pattern.startswith("/api/agent"):
+                self.assertEqual(r.method, "GET", f"{r} 是写入口，破坏了只读约定")
+
+    def test_权限翻译只声明了KeyError(self) -> None:
+        """按 id 取运行失败 → 404（用户的输入问题）。
+        ⚠️ 但**不能**把"所有异常"都翻译成 4xx —— 那会把服务端 bug
+        伪装成"你要的东西不存在"，排查方向直接被带偏。"""
+        for r in routes.ROUTES:
+            if "/api/agent/run/" in r.pattern:
+                self.assertIn(KeyError, r.errors, f"{r} 没声明 KeyError→404")
+                self.assertEqual(r.errors[KeyError], 404)
+                self.assertEqual(len(r.errors), 1, f"{r} 声明了多余的异常翻译")
 
 
 class TestApiDocExtraction(unittest.TestCase):
@@ -458,6 +533,89 @@ class TestHttpServer(unittest.TestCase):
     def test_未知路径404(self) -> None:
         s, _ = self._get("/api/nope", {"X-TW-Token": self.server.token})
         self.assertEqual(s, 404)
+
+    def test_路径多一段不会被前缀吃掉(self) -> None:
+        """路由表用 fullmatch：`/api/meta/extra` 不该命中 `/api/meta`。"""
+        s, _ = self._get("/api/meta/extra", {"X-TW-Token": self.server.token})
+        self.assertEqual(s, 404)
+
+    def test_POST打不到只读的GET接口(self) -> None:
+        req = urllib.request.Request(
+            self.server.base_url + "/api/meta", data=b"{}",
+            headers={"X-TW-Token": self.server.token})
+        try:
+            self.op.open(req, timeout=20)
+            self.fail("GET 接口竟然被 POST 命中了")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+
+    def test_agent的未知运行是404而不是500(self) -> None:
+        """取不存在的 run 是**用户的输入问题**，不该回 500 的 traceback。
+
+        ⚠️ 判据不能只看状态码。改动前那段代码写的是
+        `except KeyError: 404`，看起来也对；但它把**所有** KeyError 都
+        当成 404 —— 内部一个笔误抛的 KeyError 也会被翻译成
+        "你要的东西不存在"。所以现在只翻路由**自己声明**的异常类型。
+        """
+        s, b = self._get("/api/agent/run/definitely-not-a-run/summary",
+                         {"X-TW-Token": self.server.token})
+        self.assertEqual(s, 404)
+        self.assertIn("没有这个运行", json.loads(b)["error"])
+
+    def test_agent的非法序号是400(self) -> None:
+        s, _ = self._get("/api/agent/run/x/decision/abc",
+                         {"X-TW-Token": self.server.token})
+        self.assertEqual(s, 400)
+
+    def test_全局页与agent接口都能真的调到(self) -> None:
+        """⭐ 测的是**接线**，不是处理函数。
+
+        这三条端点的处理函数都有自己的单测（`TestApiValidate` /
+        `TestApiPayloads`），但它们**仍然可能一个 URL 都挂不上**——
+        例如漏写 `@route` 装饰器、或路径写错。那种情况下
+        "直接调函数"的测试全绿，而前端只会看到 404 / 永远"载入中…"。
+        ⇒ 所以这里从 HTTP 面再打一遍。
+        """
+        s, b = self._get("/api/doc/reports", {"X-TW-Token": self.server.token})
+        self.assertEqual(s, 200)
+        self.assertEqual(len(json.loads(b)["reports"]), 3)
+
+        s, b = self._get("/api/agent/runs", {"X-TW-Token": self.server.token})
+        self.assertEqual(s, 200)
+        self.assertIn("runs", json.loads(b))
+
+        s, b = self._get("/api/real/BTCUSDT_1h", {"X-TW-Token": self.server.token})
+        self.assertEqual(s, 200)
+        self.assertEqual(json.loads(b)["symbol"], "BTCUSDT_1h")
+
+        # 未知数据集仍要在**路由层**给出 404（real_payload 自己抛的 ApiError）
+        s, _ = self._get("/api/real/no-such-symbol", {"X-TW-Token": self.server.token})
+        self.assertEqual(s, 404)
+
+    def test_导出的响应头带文件名(self) -> None:
+        """⚠️ 少了 `Content-Disposition`，浏览器会在标签页里**直接打开** CSV，
+        用户拿不到文件 —— 而状态码与内容都是对的，**只有响应头能证明它**。
+        同理 BOM 只能在字节层面看（少了它 Excel 打开中文乱码）。"""
+        body = json.dumps({"kind": "strategy", "scenario": "normal", "seed": 3,
+                           "ticks": 60, "warmup": 200, "strategy": "noop"})
+        req = urllib.request.Request(
+            self.server.base_url + "/api/run", data=body.encode(),
+            headers={"X-TW-Token": self.server.token,
+                     "Content-Type": "application/json"})
+        jid = json.loads(self.op.open(req, timeout=20).read())["job_id"]
+        for _ in range(200):
+            time.sleep(0.05)
+            _, b = self._get("/api/job/" + jid, {"X-TW-Token": self.server.token})
+            if json.loads(b)["state"] in ("done", "error"):
+                break
+        req = urllib.request.Request(f"{self.server.base_url}/api/export/{jid}.csv",
+                                     headers={"X-TW-Token": self.server.token})
+        r = self.op.open(req, timeout=20)
+        self.assertEqual(r.status, 200)
+        disp = r.headers.get("Content-Disposition", "")
+        self.assertIn("attachment", disp)
+        self.assertIn(f"tw-{jid}.csv", disp)
+        self.assertTrue(r.read().startswith(b"\xef\xbb\xbf"), "缺 BOM，Excel 打开会乱码")
 
     def test_非法JSON请求体被拒而不是500(self) -> None:
         req = urllib.request.Request(

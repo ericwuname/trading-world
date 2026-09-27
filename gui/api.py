@@ -2,6 +2,10 @@
 
 端点一览
 --------
+⭐ URL 与处理函数**写在一起**（见文件末尾「路由声明」一节）。
+下面这份清单只是给人读的目录，**不是**第二份事实源 ——
+真正的登记表在 `gui/routes.py::ROUTES`，`routes.describe()` 可打印。
+
     GET  /api/meta                 场景 / 策略 / 默认值 / 限额 / 真实数据集
     POST /api/run                  建作业（见下方 KINDS）
     GET  /api/job/<id>             作业状态 + 进度 + 汇总结果
@@ -10,12 +14,13 @@
     GET  /api/jobs                 本次会话的历史作业列表（对照用）
     GET  /api/real/<symbol>        真实行情统计特征 + 价格序列
     GET  /api/export/<id>.csv      导出该作业的指标为 CSV
-    GET  /api/doc/reports          A14/A15/A16 三份验证报告的摘要（**全局页**，
-                                   与当前作业无关，供「文档验证」标签页用）
-    GET  /api/agent/runs           Agent 决策留痕：可用的 run 列表
-    GET  /api/agent/run/<id>/summary        某 run 的汇总
-    GET  /api/agent/run/<id>/decisions      某 run 的决策分页
-    GET  /api/agent/run/<id>/decision/<n>   单条决策的证据链
+
+另有两组端点住在各自的模块里（同样是 `@route` 声明）：
+    `gui/api_doc.py`   GET  /api/doc/reports          A14/A15/A16 报告摘要（全局页）
+    `gui/agent_api.py` GET  /api/agent/runs           决策留痕：可用 run 列表
+                       GET  /api/agent/run/<id>/summary      某 run 的汇总
+                       GET  /api/agent/run/<id>/decisions    某 run 的决策分页
+                       GET  /api/agent/run/<id>/decision/<n> 单条决策的证据链
 
 设计取舍
 --------
@@ -52,6 +57,7 @@ from tw.strategy import Strategy, make_strategy  # noqa: E402
 
 from . import __version__  # noqa: E402
 from .jobs import Job, JobManager, step_until  # noqa: E402
+from .routes import ApiError, Ctx, Response, route  # noqa: E402
 
 # ----------------------------------------------------------------------
 # 限额：不设限额的话，界面上一个手滑的输入就能把内存吃光
@@ -77,13 +83,11 @@ REAL_KEYS = ["BTCUSDT_1h", "ETHUSDT_1h", "SOLUSDT_1h"]
 ALLOW_CODE = os.environ.get("TW_GUI_ALLOW_CODE", "1") != "0"
 
 
-class ApiError(Exception):
-    """业务错误：带 HTTP 状态码，前端直接展示 message。"""
-
-    def __init__(self, message: str, status: int = 400) -> None:
-        super().__init__(message)
-        self.message = message
-        self.status = status
+# ⚠️ `ApiError` 的实现住在 `gui/routes.py`（它属于 HTTP 层，且
+#    `agent_api.py` 也要用它）。这里**再导出**一次，所以
+#    `api.ApiError` 对外照旧可用（`server.py`、`api_doc.py`、
+#    测试都这么用）。别在这里重新定义一份 —— 两份异常类会让
+#    `except api.ApiError` 抓不住真正的那个。
 
 
 # ----------------------------------------------------------------------
@@ -856,6 +860,107 @@ def export_csv(job: Job) -> str:
 
     emit("", r)
     return "\n".join(lines) + "\n"
+
+
+# ======================================================================
+# 路由声明
+# ======================================================================
+# ⭐ 每个 URL 与它的处理函数**写在一起**（原来 URL 映射在 server.py 里，
+#    函数在这里 —— 加端点要改两个文件，只改一处不报错、只是变成 404）。
+#    登记表见 `gui/routes.py`；`describe()` 能打印全部路由。
+#
+# 约定：handler 只**返回载荷**，由 server 统一序列化（`_jsonable` 负责
+# NaN→null）与翻译错误（`ApiError` → 状态码）。handler 拿不到 socket，
+# 所以不可能绕过这两件事。
+
+
+@route("GET", "/api/meta")
+def api_meta(ctx: Ctx) -> dict:
+    """场景 / 策略 / 默认值 / 限额 / 真实数据集。"""
+    return meta()
+
+
+@route("GET", "/api/real/(?P<sym>[^/]+)")
+def api_real(ctx: Ctx) -> dict:
+    """真实行情统计特征 + 价格序列（`real_payload` 自己会判未知数据集）。"""
+    return real_payload(ctx.params["sym"])
+
+
+@route("GET", "/api/jobs")
+def api_jobs(ctx: Ctx) -> dict:
+    """本次会话的历史作业列表（对照用）。不带结果体，列表可以很轻。"""
+    mgr: JobManager = ctx.mgr
+    return {
+        "jobs": [j.public(with_result=False) for j in mgr.list()],
+        "stats": mgr.stats(),
+    }
+
+
+@route("GET", "/api/job/(?P<jid>[^/]+)/series")
+def api_job_series(ctx: Ctx) -> dict:
+    """时序数据（下采样，用于画图）。
+
+    ⚠️ ``ready: False`` 是**正常状态**（还没跑到出数），不是错误 ——
+    前端据此继续轮询，而不是弹一个红框。
+    """
+    job = ctx.mgr.get(ctx.params["jid"])
+    if job is None:
+        raise ApiError("作业不存在", 404)
+    if job.series is None:
+        return {"ready": False, "state": job.state}
+    return {"ready": True, "series": job.series}
+
+
+@route("GET", "/api/job/(?P<jid>[^/]+)")
+def api_job(ctx: Ctx) -> dict:
+    """作业状态 + 进度 + 汇总结果。"""
+    job = ctx.mgr.get(ctx.params["jid"])
+    if job is None:
+        raise ApiError("作业不存在", 404)
+    return job.public()
+
+
+@route("POST", "/api/run")
+def api_run(ctx: Ctx) -> tuple[dict, int]:
+    """建作业（202 Accepted：已受理，不是已完成）。"""
+    body = ctx.body
+    # ⚠️ kind 的归一化与校验**只在 api 里做一次**（`check_kind` /
+    # `validate_spec`）。调用方不要自己 `body.get("kind") or "..."`——
+    # 那会造出第三份"默认值 + 白名单"的实现，正是这个项目踩过的坑
+    # （两份同名报错互相遮挡）。让 check_kind 全权负责。
+    body["kind"] = check_kind(body)
+    # 提交前先全量校验：参数错了要在**毫秒内**告诉用户，
+    # 而不是让他等作业跑完再从日志里翻原因。
+    validate_spec(body)
+    job = ctx.mgr.submit(body["kind"], body, execute)
+    return {"job_id": job.id, "kind": body["kind"]}, 202
+
+
+@route("POST", "/api/job/(?P<jid>[^/]+)/cancel")
+def api_job_cancel(ctx: Ctx) -> dict:
+    """请求取消（`cancelled: False` 表示作业已结束或不存在，不是错误）。"""
+    return {"cancelled": ctx.mgr.cancel(ctx.params["jid"])}
+
+
+@route("GET", "/api/export/(?P<name>[^/]+)")
+def api_export(ctx: Ctx) -> Response:
+    """导出该作业的指标为 CSV。
+
+    ⚠️ 走 `Response` 而不是 dict：CSV 要 **BOM**（Excel 打开中文不乱码）
+    与 `Content-Disposition`（否则浏览器会在标签页里直接打开，
+    用户拿不到文件）。filename 用**作业 id**而不是用户给的原始串，
+    避免把 unquote 后的路径片段写进响应头。
+    """
+    name = ctx.params["name"]
+    jid = name[:-4] if name.endswith(".csv") else name
+    job = ctx.mgr.get(jid)
+    if job is None:
+        raise ApiError("作业不存在", 404)
+    csv = export_csv(job).encode("utf-8-sig")
+    return Response(
+        csv, "text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="tw-{jid}.csv"'},
+    )
 
 
 #: 进程级单例
