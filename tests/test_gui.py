@@ -243,6 +243,46 @@ class TestApiValidate(unittest.TestCase):
             self.assertIn("report_exists", r)
             self.assertIn("json_exists", r)
 
+    def test_打包清单覆盖了界面会读的磁盘文件(self) -> None:
+        """⭐ 漏打一个文件的后果**不是报错**，而是那个功能在**安装包里静默失效**。
+
+        实测踩到（2026-09-28）：第一版 spec 只带了 `data/` 与 `gui/static/`，
+        `out/a14|a15|a16` 三份结果 JSON 没进包 ⇒
+        「文档验证」页在安装包里永远显示"产物缺失"，
+        而**开发机上一切正常**（那里 `out/` 就在手边）——
+        所以只在本机跑是发现不了的，只有"打包后再实测"或"对照清单"能发现。
+
+        这条测试对照 `api_doc.DOC_REPORTS` 检查 `bundle_data` 的覆盖面：
+        两边各写一份是故意的，**脱节必须被报出来**。
+        """
+        from gui import bundle_data
+
+        for title, jp, mp in api_doc.DOC_REPORTS:
+            for p in (jp, mp):
+                rel = p.relative_to(api_doc.ROOT).as_posix()
+                self.assertTrue(
+                    bundle_data.covers(rel),
+                    f"「{title}」要读 {rel}，但打包清单没覆盖它 —— "
+                    f"该页在安装包里会静默失效",
+                )
+
+    def test_打包清单是按相对位置摆放的(self) -> None:
+        """⚠️ 数据必须按**原相对位置**放进运行时目录，否则
+        `Path(__file__).parent.parent` 那套定位会全错
+        （那是"路径其实不用打补丁"的前提，见 packaging/README）。"""
+        from gui import bundle_data
+
+        for d in bundle_data.BUNDLE_DIRS:
+            self.assertFalse(d.startswith("/"), d)
+            self.assertNotIn("\\", d, f"{d} 必须用正斜杠（跨平台）")
+        for f in bundle_data.BUNDLE_FILES:
+            self.assertIn("/", f, f"{f} 要带上它所在的子目录")
+        self.assertTrue(bundle_data.covers("data/market.sqlite"))
+        self.assertTrue(bundle_data.covers("gui/static/index.html"))
+        self.assertTrue(bundle_data.covers("out/a16/doc_strategies.json"))
+        # 运行产物**不在**清单里（Agent 页在全新安装里为空是正常的）
+        self.assertFalse(bundle_data.covers("out/a5/dec_v2_BTC.jsonl"))
+
 
 class TestRoutes(unittest.TestCase):
     """⭐ 「URL ↔ 处理函数」必须只有**一处**事实源 —— 钉住路由表的登记。

@@ -752,6 +752,7 @@ gui/            ⭐  桌面端
                        模块里 ⇒ 加端点要改两处，只改一处不报错、只是 404）
   api.py             HTTP API 业务（作业执行 / 评估 / 批量对照）
   api_doc.py     ⭐  A16：两份文档策略实跑 + `/api/doc/reports`（全局页）
+  bundle_data.py ⭐  打包时随包带上的数据清单（**唯一定义点**，spec 与测试同读）
   server.py          标准库 ThreadingHTTPServer + token / Host / 路径防护
   agent_api.py   ⭐  A5：Agent 留痕接口（**只读 + 不接受用户路径**，
                      用 `@route` 声明自己那四条 URL；**不进 KINDS**——
@@ -759,7 +760,7 @@ gui/            ⭐  桌面端
   desktop.py         pywebview 窗口，失败自动退回浏览器
   static/index.html  单文件前端（零外部依赖，图表手写 canvas）
 
-tests/              1644 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
+tests/              1646 项测试（内核/市场/分析器/评估策略/GUI + 二期七阶段 + 三线深挖
                     + 数据层与 MCP + A1 订单模型与账户 + A2 留痕与风控 + A3 LLM 接入
                     + A4 执行与评估 + A5 GUI 集成 + A6 多段配对度量 / 结果回填 / KPI / 复盘归因与经验库）
                     ↑ 这个数字由 `scripts/selfcheck.py` 的 ③b 项与

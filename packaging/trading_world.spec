@@ -9,10 +9,15 @@
 
 2. **把项目目录原样放进运行时目录**：项目里到处是
    ``Path(__file__).resolve().parent.parent`` 来定位 `data/`、`gui/static/`。
-   只要 `data/` 与 `gui/` 在打包后**保持同样的相对位置**，
+   只要这些目录在打包后**保持同样的相对位置**，
    这些计算会**自动正确**，一行生产代码都不用改
    （实测：`tw/realdata.py` 的 ``DATA_DIR`` 与 `gui/server.py` 的 ``STATIC``
    都因此自动指向正确位置）。
+
+   ⚠️ 但"放哪些"是个坑：**运行时要读的磁盘文件，静态分析是发现不了的**。
+   第一版只带了 `data/` 与 `gui/static/`，漏掉了 `out/a14|a15|a16`
+   （「文档验证」页的数据源）⇒ 那页在安装包里永远显示"产物缺失"。
+   现在清单由 `gui/bundle_data.py` 定义，spec 与测试读**同一份**。
 
 3. **不需要可写的 `out/`**：GUI 只在内存里跑实验、通过 HTTP 返回结果，
    不落盘（实测 gui/ 下无任何 open/write_text/mkdir）。
@@ -32,12 +37,31 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 # SPECPATH 由 PyInstaller 注入 —— 用它算项目根，避免相对路径依赖当前工作目录
 ROOT = Path(SPECPATH).parent if Path(SPECPATH).name == "packaging" else Path(SPECPATH)
 
-datas: list[tuple[str, str]] = [
-    # 行情数据（tw/realdata.py 靠相对位置找它）
-    (str(ROOT / "data"), "data"),
-    # 前端单文件（gui/server.py 靠相对位置找它）
-    (str(ROOT / "gui" / "static"), "gui/static"),
-]
+# ⭐ 要带哪些数据文件，**问代码**而不是在 spec 里再抄一份。
+#    清单住在 `gui/bundle_data.py`（零依赖，所以构建期 import 它很安全），
+#    测试也读同一份 ⇒ 不可能出现"spec 漏了、测试不知道"的分叉。
+#
+# ⚠️ 这个坑真踩过（2026-09-28）：第一版 spec 只带了 `data/` 与 `gui/static/`，
+#    于是 `out/a14|a15|a16` 三份结果 JSON 没进包 ⇒「文档验证」页在
+#    **安装包里**永远显示"产物缺失"，而开发机上一切正常（那里 `out/` 就在）。
+#    静态分析发现不了这种"运行时要读的磁盘文件"。
+import sys as _sys
+
+if str(ROOT) not in _sys.path:
+    _sys.path.insert(0, str(ROOT))
+from gui.bundle_data import BUNDLE_DIRS, BUNDLE_FILES  # noqa: E402
+
+datas: list[tuple[str, str]] = []
+for _d in BUNDLE_DIRS:
+    if (ROOT / _d).is_dir():
+        datas.append((str(ROOT / _d), _d))
+    else:
+        print(f"[spec] ⚠️ 数据目录不存在，跳过：{_d}")
+for _f in BUNDLE_FILES:
+    if (ROOT / _f).is_file():
+        datas.append((str(ROOT / _f), str(Path(_f).parent)))
+    else:
+        print(f"[spec] ⚠️ 数据文件不存在，跳过：{_f}")
 
 binaries: list[tuple[str, str]] = []
 hiddenimports: list[str] = []

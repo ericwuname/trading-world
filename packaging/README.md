@@ -66,6 +66,48 @@ module 'gui' (most likely due to a circular import)
 
 实测验证：打包后 `/api/real/BTCUSDT_1h` 能读到 **17520 根**真实数据。
 
+### 2b. ⚠️ 但"**放哪些**"是坑：运行时要读的磁盘文件，静态分析发现不了
+
+第一版 spec 只带了 `data/` 与 `gui/static/` ——
+于是 `out/a14`、`out/a15`、`out/a16`（「文档验证」页的数据源）
+**没进包**，那页在安装包里永远显示"产物缺失"，
+而**开发机上一切正常**（那里 `out/` 就在手边）。
+⇒ 只在本机跑测试是**发现不了**这类问题的，只有"打包后再实测"或"对照清单"能发现。
+
+现在清单由 `gui/bundle_data.py` **唯一定义**（零依赖模块，spec 与测试读同一份）：
+
+```python
+# gui/bundle_data.py
+BUNDLE_DIRS  = ("data", "gui/static", "out/a14", "out/a15", "out/a16")
+BUNDLE_FILES = ("docs/A14-….md", "docs/A15-….md", "docs/A16-….md")
+```
+
+**划线的依据是「随包内容 vs 运行产物」**：
+A14/A15/A16 三份报告的验证结果是**随包内容**（产品展示的对象，固定）；
+`out/a4`、`out/a5`、`docs/llm-run-*` 是**运行产物**（用工具跑出来的），
+全新安装里没有它们是正常的（前端有诚实的空状态）。
+要一起带上就把目录加进 `BUNDLE_DIRS`（一行，代价 ~31 MB）。
+
+`tests/test_gui.py::test_打包清单覆盖了界面会读的磁盘文件` 会对照
+`api_doc.DOC_REPORTS` 检查覆盖面 —— 两边各写一份是故意的，**脱节必须被报出来**。
+
+### 2c. ⚠️ 重建时先"回收"旧产物（环境会拦批量删除）
+
+PyInstaller 的 `COLLECT` 要先把旧的 `dist/TradingWorld/`（**384 个文件**）
+删掉才能重建，而本环境的**批量删除保护**会把它拦下来：
+
+```
+[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":384,"threshold":50,…}
+```
+
+⇒ 先把它**移入回收站**（项目自带的工具，不是永久删除），再打包：
+
+```bash
+python tools/recycle_paths.py out/_package/dist/TradingWorld
+python -m PyInstaller --noconfirm --clean --distpath out/_package/dist \
+    --workpath out/_package/build packaging/trading_world.spec
+```
+
 ### 3. GUI 不需要可写的目录
 
 `gui/` 下没有任何 `open`/`write_text`/`mkdir`——实验只在内存里跑，
@@ -78,7 +120,29 @@ module 'gui' (most likely due to a circular import)
 
 ## 怎么验证打包结果（**不要只看"打包成功"**）
 
-打包成功 ≠ 能运行。这个 spec 的验证方式是：
+打包成功 ≠ 能运行。**已脚本化**（比手敲 curl 可靠，且能覆盖响应头/BOM 这类
+"只看状态码看不出来"的判据）。三个脚本都在本目录、随仓库走：
+
+```bash
+# ① 把 exe 当黑盒打真接口（含真跑一个作业、导出 CSV、无 token 被拒）
+python packaging/verify_exe.py out/_package/dist/TradingWorld/TradingWorld.exe 8795
+
+# ② 视觉验证：起服务 → 无头截图 → 然后**必须打开图看一眼**
+python packaging/shot_exe.py out/_package/截图.png          # 首页
+python packaging/shot_exe.py out/_package/截图-文档.png docverify   # 指定标签页
+
+# ③ 安装包：安装 → 运行 → 卸载（全静默，/NOICONS 不碰桌面与开始菜单）
+python packaging/verify_setup.py
+```
+
+`verify_exe.py` 覆盖：`/`（离线可用）→ `/api/meta` → `/api/doc/reports`
+（**三份报告 JSON 与 md 都在包里**）→ `/api/agent/runs` → `/api/real/<sym>`
+→ `POST /api/run` 真跑一个策略作业 → 查 `PnL 三分解恒等式` →
+导出 CSV 查 `Content-Disposition` 与 BOM → 无 token 返回 403 → 未知接口 404。
+⚠️ 它**故意换一个 cwd** 启动，用来证明"路径靠相对位置自动正确"
+而不是碰巧 cwd 帮了忙。
+
+手敲的话大致是：
 
 ```bash
 cd out/_package/dist/TradingWorld
@@ -92,26 +156,50 @@ cd out/_package/dist/TradingWorld
 # 3. 打接口
 curl -H "X-TW-Token: XXXX" http://127.0.0.1:8795/api/meta
 curl -H "X-TW-Token: XXXX" http://127.0.0.1:8795/api/real/BTCUSDT_1h
+curl -H "X-TW-Token: XXXX" http://127.0.0.1:8795/api/doc/reports
 
 # 4. 跑一个真实实验
 curl -X POST -H "X-TW-Token: XXXX" -H "Content-Type: application/json" \
   -d '{"scenario":"liquidation","seed":20260917,"ticks":3000,"strategy":"mm_skewed"}' \
   http://127.0.0.1:8795/api/run
 # → 拿 job_id，轮询 /api/job/<id> 看 state 变 done
-
-# 5. 视觉验证（最可靠的一步）
-msedge --headless=new --window-size=1440,900 --screenshot=shot.png \
-  "http://127.0.0.1:8795/?token=XXXX"
 ```
 
 ⚠️ **用 `curl -w "%{size_download}"` 判断响应大小会骗人**——
 实测首页它报 `0 bytes`，而响应头明确写着 `Content-Length: 65869`。
 要看就用 `-D -` 看响应头，或者干脆存成文件看大小。
 
+## 生成分发产物
+
+```bash
+python packaging/make_dist.py
+```
+
+一条命令做三件事，并且**当场自检**（不看"命令返回 0"）：
+
+| 产物 | 说明 |
+|---|---|
+| `out/_package/TradingWorld-v<版本>-win64-免安装.zip` | 解压即用；**校验 CRC + 顶层目录名 + 条目数**（解压出来必须是一个 `TradingWorld/` 文件夹，不能把 `_internal` 摊一地） |
+| `out/_package/TradingWorld-Setup-<版本>.exe` | Inno Setup 正式安装包（可装 Program Files、有标准卸载项） |
+| `packaging/install.ps1` | **零依赖**的 PowerShell 安装器（不需要 Inno Setup、不需要管理员） |
+
+版本号从 `gui/__init__.py::__version__` 读，**不在这里再写一个**。
+
+## ⚠️ 为什么打包产物里保留控制台窗口
+
+`console=True` 是为了**看得见降级**：`gui/desktop.py` 的三条失败路径
+（端口起不来 / pywebview 加载不了 / 窗口创建失败）全都靠 `print` 报出来。
+改成 `False` 之后这些提示会**全部变成"双击没反应"**，
+而这正是本项目最不想再踩的一类坑（静默失败）。
+控制台还顺带把"带令牌地址"直接摆出来，方便排查与自动化验证。
+
+要无黑窗版本：把 spec 里 `console=True` 改 `False`，同时给
+`desktop.py` 的失败路径加一个 MessageBox（`ctypes.windll.user32`，stdlib）
+——**两件事必须一起做**，只改前者会得到静默失败。
+
 ## 待办 / 可改进
 
 - [ ] 加图标（`.ico`）。有图标后 spec 的 `EXE(icon=...)` 与 iss 的
       `SetupIconFile` 都能用上，看起来会正式很多。
-- [ ] 正式版把 spec 里 `console=True` 改成 `False`（现在是留着看错误的）。
 - [ ] 若要让没装 WebView2 的机器也能跑，可以把 WebView2 的固定版运行时
       一起打进去（代价：体积 +100~150 MB）。

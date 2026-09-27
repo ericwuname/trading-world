@@ -173,18 +173,30 @@ def run_doc_strategy(job: Job) -> tuple[dict, dict | None]:
     return result, series_out
 
 
+#: A14/A15/A16 三份验证报告：(标题, 结果 JSON, 报告 md)。
+#:
+#: ⭐ 提到**模块级**是为了让 `tests/test_gui.py` 能对照它检查
+#: `gui/bundle_data.py` 的打包清单覆盖了没 —— 漏打一个文件的后果
+#: 不是报错，而是「文档验证」页在**安装包里**静默失效
+#: （2026-09-28 实测踩到：三份 JSON 都没打进去，开发机上一切正常）。
+DOC_REPORTS: tuple[tuple[str, Path, Path], ...] = (
+    ("A14 网格（左尾）", ROOT / "out" / "a14" / "grid_results.json",
+     ROOT / "docs" / "A14-个人交易决策系统方案-验证报告.md"),
+    ("A15 右尾（概率结构）", ROOT / "out" / "a15" / "right_tail.json",
+     ROOT / "docs" / "A15-右尾策略完全手册-验证报告.md"),
+    ("A16 系统实测（本 GUI）", ROOT / "out" / "a16" / "doc_strategies.json",
+     ROOT / "docs" / "A16-两文档策略接入系统-实测报告.md"),
+)
+
+
 def doc_reports_payload() -> dict:
-    """A14/A15/A16 三份验证报告的摘要（结果 JSON 现算 + 报告文件路径）。"""
-    specs = [
-        ("A14 网格（左尾）", ROOT / "out" / "a14" / "grid_results.json",
-         ROOT / "docs" / "A14-个人交易决策系统方案-验证报告.md"),
-        ("A15 右尾（概率结构）", ROOT / "out" / "a15" / "right_tail.json",
-         ROOT / "docs" / "A15-右尾策略完全手册-验证报告.md"),
-        ("A16 系统实测（本 GUI）", ROOT / "out" / "a16" / "doc_strategies.json",
-         ROOT / "docs" / "A16-两文档策略接入系统-实测报告.md"),
-    ]
+    """A14/A15/A16 三份验证报告的摘要（结果 JSON 现算 + 报告文件路径）。
+
+    ⚠️ 文件不存在时**不抛异常**，而是如实回 `report_exists/json_exists`：
+    打包后少带了文件，用户该看到的是一句"缺哪个"，而不是一个 500。
+    """
     reports = []
-    for title, jp, mp in specs:
+    for title, jp, mp in DOC_REPORTS:
         item = {"title": title, "report_file": mp.name,
                 "report_exists": mp.exists(), "json_exists": jp.exists()}
         if jp.exists():
