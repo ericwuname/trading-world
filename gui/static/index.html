@@ -81,15 +81,29 @@ textarea{resize:vertical;font-family:ui-monospace,Consolas,"Courier New",monospa
 /* ---------- 主区 ---------- */
 main{flex:1;display:flex;flex-direction:column;min-width:0}
 #tabs{
-  display:flex;gap:2px;padding:0 16px;background:var(--panel);
+  display:flex;align-items:stretch;gap:2px;padding:0 16px;background:var(--panel);
   border-bottom:1px solid var(--grid);flex:0 0 auto;
 }
+/* 分组：把「一次作业的结果」与「随时可看的全局页」在视觉上分开。
+   理由——「文档验证」读的是磁盘上的报告，和当前跑没跑作业毫无关系；
+   和作业结果页并排放，会让人以为它也需要先跑一次。 */
+#tabs .grp{display:flex;gap:2px;align-items:stretch}
+#tabs .grplabel{
+  display:flex;align-items:center;padding:0 8px;font-size:10.5px;letter-spacing:.08em;
+  color:var(--muted);text-transform:uppercase;opacity:.75;user-select:none;
+}
+#tabs .sep{width:1px;background:var(--grid);margin:9px 6px;flex:0 0 auto}
 #tabs button{
   background:none;border:none;padding:13px 15px 11px;cursor:pointer;color:var(--muted);
   border-bottom:2px solid transparent;font-size:13.5px;transition:color .12s,border-color .12s;
 }
 #tabs button:hover{color:var(--fg2)}
 #tabs button.on{color:var(--fg);border-bottom-color:var(--mid);font-weight:600}
+/* 全局页的标签：用一个点提示"它不依赖当前作业" */
+#tabs button[data-tab="docverify"]::before,
+#tabs button[data-tab="agent"]::before{
+  content:"●";font-size:7px;vertical-align:middle;margin-right:5px;color:var(--purple);
+}
 #pane{flex:1;overflow-y:auto;padding:18px 20px 60px;min-height:0}
 .tabpane{display:none}
 .tabpane.on{display:block}
@@ -303,25 +317,43 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
   </aside>
 
   <main>
-    <nav id="tabs">
-      <button data-tab="overview" class="on">总览</button>
-      <button data-tab="charts">图表</button>
-      <button data-tab="metrics">指标</button>
-      <button data-tab="strategy">策略表现</button>
-      <button data-tab="compare">对照</button>
-      <button data-tab="real">真实比对</button>
-      <button data-tab="agent">Agent 决策</button>
-      <button data-tab="docverify">文档验证</button>
+    <nav id="tabs" role="tablist" aria-label="视图">
+      <!-- 分组一：当前作业的**结果**（先跑，才有东西看） -->
+      <div class="grp" role="presentation">
+        <button role="tab" data-tab="overview" class="on" aria-selected="true"
+                aria-controls="tab-overview">总览</button>
+        <button role="tab" data-tab="charts" aria-selected="false"
+                aria-controls="tab-charts">图表</button>
+        <button role="tab" data-tab="metrics" aria-selected="false"
+                aria-controls="tab-metrics">指标</button>
+        <button role="tab" data-tab="strategy" aria-selected="false"
+                aria-controls="tab-strategy">策略表现</button>
+        <button role="tab" data-tab="compare" aria-selected="false"
+                aria-controls="tab-compare">对照</button>
+        <button role="tab" data-tab="real" aria-selected="false"
+                aria-controls="tab-real">真实比对</button>
+      </div>
+      <div class="sep" aria-hidden="true"></div>
+      <!-- 分组二：**全局页面**（与当前作业无关，随时可看） -->
+      <div class="grp" role="presentation">
+        <span class="grplabel" aria-hidden="true">全局</span>
+        <button role="tab" data-tab="agent" aria-selected="false"
+                aria-controls="tab-agent"
+                title="读磁盘上的决策留痕，与当前作业无关">Agent 决策</button>
+        <button role="tab" data-tab="docverify" aria-selected="false"
+                aria-controls="tab-docverify"
+                title="读磁盘上的三份验证报告，与当前作业无关">文档验证</button>
+      </div>
     </nav>
     <div id="pane">
-      <div class="tabpane on" id="tab-overview"></div>
-      <div class="tabpane" id="tab-charts"></div>
-      <div class="tabpane" id="tab-metrics"></div>
-      <div class="tabpane" id="tab-strategy"></div>
-      <div class="tabpane" id="tab-compare"></div>
-      <div class="tabpane" id="tab-real"></div>
-      <div class="tabpane" id="tab-agent"></div>
-      <div class="tabpane" id="tab-docverify"></div>
+      <div class="tabpane on" id="tab-overview" role="tabpanel" aria-label="总览"></div>
+      <div class="tabpane" id="tab-charts" role="tabpanel" aria-label="图表"></div>
+      <div class="tabpane" id="tab-metrics" role="tabpanel" aria-label="指标"></div>
+      <div class="tabpane" id="tab-strategy" role="tabpanel" aria-label="策略表现"></div>
+      <div class="tabpane" id="tab-compare" role="tabpanel" aria-label="对照"></div>
+      <div class="tabpane" id="tab-real" role="tabpanel" aria-label="真实比对"></div>
+      <div class="tabpane" id="tab-agent" role="tabpanel" aria-label="Agent 决策"></div>
+      <div class="tabpane" id="tab-docverify" role="tabpanel" aria-label="文档验证"></div>
     </div>
   </main>
 </div>
@@ -647,6 +679,7 @@ function drawBars(cvId, labels, values, spec) {
 const State = {
   meta: null,
   kind: "strategy",
+  tab: "overview",    // 当前可见的标签页（渲染调度以它为准，见 §5）
   job: null,          // 当前作业的 public 对象
   series: null,
   poll: null,
@@ -861,8 +894,8 @@ async function attachJob(j) {
       State.history.unshift(j);
       if (State.history.length > 25) State.history.pop();
     }
+    markDirty();          // 新结果 → 所有视图都可能要重画
     switchTab("overview");
-    renderAll();
   } else {
     pollJob(j.id);
   }
@@ -888,45 +921,137 @@ async function maybeLoadJob() {
 
 /* =====================================================================
    5. 各视图渲染
-   ===================================================================== */
-function switchTab(name) {
-  $$("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  $$(".tabpane").forEach((p) => p.classList.toggle("on", p.id === "tab-" + name));
-  renderAll();
-}
-function renderAll() {
-  renderOverview(); renderCharts(); renderMetrics();
-  renderStrategyTab(); renderCompare(); renderReal(); renderAgent();
-  renderDocVerify();
+   =====================================================================
+   渲染调度：**只画当前可见的那个标签页**。
+
+   原来的 `renderAll()` 每次切 tab 都把 8 个渲染器全部同步跑一遍——
+   其中 7 个画的是不可见的 pane（白费功夫），而且 `renderDocVerify`
+   每次都要重新 fetch `/api/doc/reports`（于是每切一次 tab 就闪一次
+   "载入中…"，哪怕数据一个字都没变）。
+
+   现在改成：
+     · `RENDERERS` 登记表 —— tab 名 → 渲染函数，一处定义；
+     · `markDirty()` 只打标记，`renderTab(name)` 只跑当前那个；
+     · 结果变了没变由 `dirty` 决定，切回旧 tab 不重画、不重拉。
+*/
+const RENDERERS = {
+  overview: () => renderOverview(),
+  charts: () => renderCharts(),
+  metrics: () => renderMetrics(),
+  strategy: () => renderStrategyTab(),
+  compare: () => renderCompare(),
+  real: () => renderReal(),
+  agent: () => renderAgent(),
+  docverify: () => renderDocVerify(),
+};
+//: 启动时全部置脏（首绘必须画一次）
+const DIRTY = new Set(Object.keys(RENDERERS));
+
+function markDirty(...names) {
+  for (const n of (names.length ? names : Object.keys(RENDERERS))) DIRTY.add(n);
+  // 当前可见的立刻重画（否则改了参数要点一次 tab 才刷新）
+  const cur = State.tab;
+  if (cur && DIRTY.has(cur)) renderTab(cur);
 }
 
-async function renderDocVerify() {
+function switchTab(name) {
+  State.tab = name;
+  const btns = $$("#tabs button");
+  btns.forEach((b) => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+    // roving tabindex：只有当前项在 Tab 键序列里，方向键在项间移动
+    b.tabIndex = on ? 0 : -1;
+  });
+  $$(".tabpane").forEach((p) => p.classList.toggle("on", p.id === "tab-" + name));
+  renderTab(name);
+}
+
+/* 标签栏的键盘操作（WAI-ARIA tabs 模式）：←/→ 循环切换并聚焦，Home/End 跳首尾。
+   只加键盘通路，不改鼠标行为——原来纯 <button> 完全无法用键盘选中。 */
+function wireTabKeys() {
+  const btns = $$("#tabs button");
+  btns.forEach((b, i) => {
+    b.tabIndex = b.dataset.tab === (State.tab || "overview") ? 0 : -1;
+    b.onkeydown = (e) => {
+      let j = null;
+      if (e.key === "ArrowRight") j = (i + 1) % btns.length;
+      else if (e.key === "ArrowLeft") j = (i - 1 + btns.length) % btns.length;
+      else if (e.key === "Home") j = 0;
+      else if (e.key === "End") j = btns.length - 1;
+      if (j === null) return;
+      e.preventDefault();
+      const t = btns[j];
+      switchTab(t.dataset.tab);
+      t.focus();
+    };
+  });
+}
+
+function renderTab(name) {
+  const fn = RENDERERS[name];
+  if (!fn) return;
+  DIRTY.delete(name);
+  fn();
+}
+
+/* ---- 「文档验证」是**全局报告页**，与当前作业无关 ----
+   数据只取一次就够：`/api/doc/reports` 读的是磁盘上的三份 JSON，
+   在一个会话里不会变。缓存住，避免每次切换都重拉 + 闪占位。 */
+let DOC_REPORTS = null;   // null = 没取过；{error} = 取过但失败
+function renderDocVerify() {
   const box = $("#tab-docverify");
   box.innerHTML = "";
-  box.append(el("div", { class: "desc" }, "载入中…"));
-  try {
-    const d = await api("/api/doc/reports");
-    box.innerHTML = "";
-    box.append(card("两份文档的验证状态（A14/A15/A16）",
-      "《个人交易决策系统方案》（左尾网格）与《右尾策略完全手册》已由本项目独立验证。"
-      + "下表是三份验证报告的要点与文件位置。", null,
-      ...d.reports.map((rp) => {
-        const bits = [];
-        if (rp.summary) {
-          for (const [k, v] of Object.entries(rp.summary)) {
-            bits.push(`<b>${esc(k)}</b> = ${esc(JSON.stringify(v))}`);
-          }
-        }
-        return el("div", { class: "note", html:
-          `<b>${esc(rp.title)}</b>　` +
-          (rp.report_exists ? '<span class="tag good">报告在</span>' : '<span class="tag bad">报告缺失</span>') + "　" +
-          (rp.json_exists ? '<span class="tag good">结果数据在</span>' : '<span class="tag bad">结果缺失</span>') +
-          (bits.length ? "<br>" + bits.join("　·　") : "") +
-          (rp.report_exists ? `<br>报告：<code>docs/${esc(rp.report_file)}</code>` : "") }));
-      })));
-  } catch (e) {
-    box.append(el("div", { class: "note bad" }, "载入失败：" + e.message));
+  if (DOC_REPORTS && !DOC_REPORTS.error) {
+    box.append(docVerifyCard(DOC_REPORTS.reports));
+    return;
   }
+  if (DOC_REPORTS && DOC_REPORTS.error) {   // 失败也要留痕，别无限重试
+    box.append(el("div", { class: "note bad" },
+      "载入失败：" + DOC_REPORTS.error +
+      "（点上面标签页可重试）"));
+    box.append(el("button", { class: "btn sm", onclick: () => {
+      DOC_REPORTS = null; DIRTY.add("docverify"); renderTab("docverify");
+    }, style: "margin-top:8px" }, "重试"));
+    return;
+  }
+  const ph = el("div", { class: "desc" }, "载入中…");
+  box.append(ph);
+  api("/api/doc/reports").then((d) => {
+    DOC_REPORTS = d;
+    // ⚠️ 用户可能已经切走了 —— 只更新缓存，不动别的 pane
+    if ($("#tab-docverify").classList.contains("on")) {
+      box.innerHTML = "";
+      box.append(docVerifyCard(d.reports));
+    }
+  }).catch((e) => {
+    DOC_REPORTS = { error: e.message };
+    if ($("#tab-docverify").classList.contains("on")) {
+      box.innerHTML = "";
+      box.append(el("div", { class: "note bad" }, "载入失败：" + e.message));
+    }
+  });
+}
+
+function docVerifyCard(reports) {
+  return card("两份文档的验证状态（A14/A15/A16）",
+    "《个人交易决策系统方案》（左尾网格）与《右尾策略完全手册》已由本项目独立验证。"
+    + "下表是三份验证报告的要点与文件位置。", null,
+    ...reports.map((rp) => {
+      const bits = [];
+      if (rp.summary) {
+        for (const [k, v] of Object.entries(rp.summary)) {
+          bits.push(`<b>${esc(k)}</b> = ${esc(JSON.stringify(v))}`);
+        }
+      }
+      return el("div", { class: "note", html:
+        `<b>${esc(rp.title)}</b>　` +
+        (rp.report_exists ? '<span class="tag good">报告在</span>' : '<span class="tag bad">报告缺失</span>') + "　" +
+        (rp.json_exists ? '<span class="tag good">结果数据在</span>' : '<span class="tag bad">结果缺失</span>') +
+        (bits.length ? "<br>" + bits.join("　·　") : "") +
+        (rp.report_exists ? `<br>报告：<code>docs/${esc(rp.report_file)}</code>` : "") });
+    }));
 }
 function emptyBox(title, tips) {
   return el("div", { class: "empty" },
@@ -1695,11 +1820,14 @@ function applyUrlParams() {
   set("#seed", "seed"); set("#ticks", "ticks"); set("#warmup", "warmup");
   set("#cash", "cash"); set("#inv", "inventory");
   set("#labSeeds", "lab_seeds"); set("#labTicks", "lab_ticks");
+  // 深链的 kind 必须是**后端认得的类型**。这里的名单与 `api.KINDS` 对应；
+  // 只列界面上真正的"作业类型"（lab 由「批量对照」按钮单独触发，不走这里）。
   const kind = q.get("kind");
-  if (kind === "market" || kind === "strategy") {
+  if (kind === "market" || kind === "strategy" || kind === "doc_strategy") {
     State.kind = kind;
     $$("#kindPills button").forEach((x) => x.classList.toggle("on", x.dataset.kind === kind));
     $("#strategySec").style.display = kind === "strategy" ? "" : "none";
+    $("#docSec").style.display = kind === "doc_strategy" ? "" : "none";
   }
   const sc = q.get("scenario");
   if (sc && State.meta.scenarios.some((s) => s.name === sc)) {
@@ -1730,6 +1858,7 @@ async function maybeAutorun() {
    7. 事件绑定与启动
    ===================================================================== */
 $$("#tabs button").forEach((b) => b.onclick = () => switchTab(b.dataset.tab));
+wireTabKeys();
 $$("#kindPills button").forEach((b) => b.onclick = () => {
   State.kind = b.dataset.kind;
   $$("#kindPills button").forEach((x) => x.classList.toggle("on", x === b));
@@ -1767,15 +1896,19 @@ $("#loadReal").onclick = async () => {
   const btn = $("#loadReal"); btn.disabled = true; btn.textContent = "载入中…";
   try {
     State.real = await api("/api/real/" + $("#realSel").value);
+    markDirty("real");       // 只为这个数据打脏，其它 pane 不受影响
     switchTab("real");
   } catch (e) { alert("载入失败：" + e.message); }
   finally { btn.disabled = false; btn.textContent = "载入真实行情并对比"; }
 };
+// 窗口尺寸变化 → canvas 要按新宽度重画。**只有 canvas 类视图需要**，
+// 原来把所有渲染器都跑一遍，改 tab 之外还顺带重拉了一次文档报告。
 window.addEventListener("resize", () => {
   clearTimeout(window.__rz);
   window.__rz = setTimeout(() => {
-    renderCharts(); renderMetrics(); renderReal();
-    if (State.agent.loaded) renderAgent();   // A5：曲线要跟着重画
+    const c = State.tab;
+    if (c === "charts" || c === "metrics" || c === "real" || c === "agent"
+        || c === "overview" || c === "strategy") renderTab(c);
   }, 180);
 });
 
@@ -1821,7 +1954,9 @@ window.addEventListener("resize", () => {
       await ensureAgentLoaded();
     }
   }
-  renderAll();
+  // 首绘：DIRTY 初始化时是全脏的，所以第一步必须把当前 tab 画出来。
+  // （`State.tab` 默认 "overview"；若 URL 指定了 tab，后面 switchTab 会接管）
+  renderTab(State.tab || "overview");
   if (await maybeLoadJob()) { if (State.wantTab) switchTab(State.wantTab); return; }
   await maybeAutorun();
   if (State.wantTab) switchTab(State.wantTab);

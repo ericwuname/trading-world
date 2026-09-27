@@ -3,13 +3,19 @@
 端点一览
 --------
     GET  /api/meta                 场景 / 策略 / 默认值 / 限额 / 真实数据集
-    POST /api/run                  建作业（market | strategy | lab）
+    POST /api/run                  建作业（见下方 KINDS）
     GET  /api/job/<id>             作业状态 + 进度 + 汇总结果
     GET  /api/job/<id>/series      时序数据（下采样，用于画图）
     POST /api/job/<id>/cancel      请求取消
     GET  /api/jobs                 本次会话的历史作业列表（对照用）
     GET  /api/real/<symbol>        真实行情统计特征 + 价格序列
     GET  /api/export/<id>.csv      导出该作业的指标为 CSV
+    GET  /api/doc/reports          A14/A15/A16 三份验证报告的摘要（**全局页**，
+                                   与当前作业无关，供「文档验证」标签页用）
+    GET  /api/agent/runs           Agent 决策留痕：可用的 run 列表
+    GET  /api/agent/run/<id>/summary        某 run 的汇总
+    GET  /api/agent/run/<id>/decisions      某 run 的决策分页
+    GET  /api/agent/run/<id>/decision/<n>   单条决策的证据链
 
 设计取舍
 --------
@@ -29,6 +35,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -381,8 +388,42 @@ def _resolve_strategy(spec: dict) -> tuple[str, type, dict]:
 
 
 # ----------------------------------------------------------------------
+# 作业类型的**唯一事实源**
+# ----------------------------------------------------------------------
+# 教训（记下来，别再犯）：这里原来是两份东西——`validate_spec()` 里一份
+# 白名单、`execute()` 里一份 if-链，而且**报错文本一模一样**
+# （都是 `未知作业类型 {kind!r}`）。给 execute 加了新类型却忘了 validate，
+# 就会在提交时被自己拦下，报错指向的位置还是错的。
+#
+# 现在只有这一个 dict：加一种作业 = 加一行（在下面的作业函数上挂装饰器）。
+# 白名单、校验分发、执行分发全部由它派生，结构上不可能再不同步。
+KINDS: dict[str, Callable[[Job], tuple[dict, dict | None]]] = {}
+
+
+def register_kind(kind: str):
+    """把一个作业函数登记为某类型。加类型只走这一条路。"""
+
+    def deco(fn):
+        if kind in KINDS:  # pragma: no cover - 只在开发期手滑时触发
+            raise RuntimeError(f"作业类型 {kind!r} 重复登记")
+        KINDS[kind] = fn
+        return fn
+
+    return deco
+
+
+def check_kind(spec: dict) -> str:
+    """校验并归一化 spec 里的 kind（提交前的第一道门）。"""
+    kind = spec.get("kind") or "strategy"
+    if kind not in KINDS:
+        raise ApiError(f"未知作业类型 {kind!r}；可用：{sorted(KINDS)}")
+    return kind
+
+
+# ----------------------------------------------------------------------
 # 作业实现
 # ----------------------------------------------------------------------
+@register_kind("market")
 def run_market(job: Job) -> tuple[dict, dict | None]:
     spec = job.spec
     sc = _scenario_from_spec(spec)
@@ -487,6 +528,7 @@ def _fmt(v, nd: int = 2) -> str:
     return "—" if not math.isfinite(f) else f"{f:,.{nd}f}"
 
 
+@register_kind("strategy")
 def run_strategy(job: Job) -> tuple[dict, dict | None]:
     spec = job.spec
     sc = _scenario_from_spec(spec)
@@ -631,6 +673,7 @@ def _lab_aggregate(rows: list[dict]) -> dict:
     return out
 
 
+@register_kind("lab")
 def run_lab(job: Job) -> tuple[dict, dict | None]:
     spec = job.spec
     from strategies import REGISTRY
@@ -727,12 +770,8 @@ def validate_spec(spec: dict) -> None:
     只做校验，不产生副作用（不会真的建市场，也不会执行策略代码的
     ``on_tick``——但**会 exec 一遍代码本身**，因为语法错误只能这样查出来）。
     """
-    kind = spec.get("kind") or "strategy"
-    # ⚠️ 注意：execute() 里还有一份 kind 分发。两处必须同步——
-    #    我加 doc_strategy 时只改了 execute，被这里这个**同名错误信息**
-    #    的白名单拦了半小时（报错文本一模一样，误导定位）。
-    if kind not in ("market", "strategy", "lab", "doc_strategy"):
-        raise ApiError(f"未知作业类型 {kind!r}")
+    kind = check_kind(spec)
+
 
     if kind == "lab":
         from strategies import REGISTRY
@@ -772,177 +811,28 @@ def validate_spec(spec: dict) -> None:
         _num(spec, "inventory", 0.0, -1e6, 1e6)
 
 
-# ── A16：文档策略（网格/右尾）实跑 + A14~A15 验证报告 ──────────
-_DOC_INSTRUMENTS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+def execute(job: Job) -> tuple[dict, dict | None]:
+    """按类型分发。查的 `KINDS` 与 `validate_spec` 是**同一份表**。"""
+    fn = KINDS.get(job.kind)
+    if fn is None:  # pragma: no cover - 提交时已拦，正常到不了这里
+        raise ApiError(f"未知作业类型 {job.kind!r}；可用：{sorted(KINDS)}")
+    return fn(job)
 
 
-def _doc_load(inst: str):
-    from tw.marketdb import MarketStore
-    st = MarketStore()
-    try:
-        return st.load_candles("binance_csv", inst, "1H", limit=17520)
-    finally:
-        st.close()
-
-
-def _doc_trade_stats(fills) -> dict:
-    """按净头寸配对算每笔已实现盈亏（含手续费；支持空头）。"""
-    pos = entry = 0.0
-    trades: list[float] = []
-    fees = slip = 0.0
-    for f in fills:
-        q = float(f.qty) * (1.0 if f.side == "buy" else -1.0)
-        fees += float(f.fee)
-        slip += float(getattr(f, "slippage_cost", 0.0) or 0.0)
-        if pos == 0.0 or (q > 0) == (pos > 0):
-            tot = abs(pos) + abs(q)
-            entry = (entry * abs(pos) + f.price * abs(q)) / tot if tot else 0.0
-            pos += q
-        else:
-            closed = min(abs(q), abs(pos))
-            if closed > 1e-12:
-                trades.append(closed * (f.price - entry)
-                              * (1.0 if pos > 0 else -1.0) - f.fee)
-            pos += q
-            entry = f.price if abs(pos) > 1e-12 else entry
-    n = len(trades)
-    total = sum(trades)
-    wins = [t for t in trades if t > 0]
-    losses = [t for t in trades if t <= 0]
-    skew = float("nan")
-    if n >= 3:
-        mu = total / n
-        m2 = sum((t - mu) ** 2 for t in trades) / n
-        m3 = sum((t - mu) ** 3 for t in trades) / n
-        skew = m3 / (m2 ** 1.5) if m2 > 0 else float("nan")
-    return {"n_trades": n, "total_realized": total,
-            "E_per_trade": total / n if n else float("nan"),
-            "win_rate": len(wins) / n if n else float("nan"),
-            "skew": skew, "fees": fees, "slippage": slip,
-            "net_after_costs": total - fees - slip}
-
-
-def run_doc_strategy(job: Job) -> tuple[dict, dict | None]:
-    """A16：把《两份文档》的策略放进系统同一条管线实跑（连续 2 年）。"""
-    from tw.account import MarginAccount, MarginConfig
-    from tw.agent import AgentConfig, TradingAgent
-    from tw.agent_run import run_agent_session
-    from tw.policies_doc import GridPolicyDoc, RightTailPolicyDoc
-    from tw.simexec import ExecConfig
-
-    spec = job.spec
-    inst = str(spec.get("instrument") or "BTCUSDT")
-    name = str(spec.get("doc_strategy") or "grid_doc")
-    if inst not in _DOC_INSTRUMENTS:
-        raise ApiError(f"未知标的 {inst!r}；可用 {list(_DOC_INSTRUMENTS)}")
-    cash = _num(spec, "cash", 100_000.0, 1_000.0, 1e9)
-    k = _num(spec, "k", 0.25, 0.05, 0.6)
-    n = _int(spec, "n", 10, 2, 100)
-    stop_pct = _num(spec, "stop_pct", 0.02, 0.002, 0.2)
-    target_pct = _num(spec, "target_pct", 0.20, 0.02, 3.0)
-
-    job.say(f"载入 {inst} 1H（market.sqlite，2 年）…")
-    series = _doc_load(inst)
-    if name == "grid_doc":
-        policy = GridPolicyDoc(k=k, n=n)
-        label = f"网格 k=±{k:.0%} N={n}"
-    elif name == "righttail_doc":
-        policy = RightTailPolicyDoc(stop_pct=stop_pct, target_pct=target_pct)
-        label = f"右尾 止损{stop_pct:.1%}/目标{target_pct:.0%}"
-    else:
-        raise ApiError(f"未知文档策略 {name!r}；可用 grid_doc / righttail_doc")
-
-    agent = TradingAgent(policy=policy,
-                         config=AgentConfig(inst_id=inst, n_closes=64,
-                                            agent_id=name))
-    account = MarginAccount(cash=cash, cfg=MarginConfig())
-    job.say(f"{label}｜{inst}｜1x｜连续 2 年（{len(series.close):,} 根）")
-    t0 = time.time()
-    res = run_agent_session(agent, series, account=account, start=0,
-                            end=len(series.close) - 1, name=name,
-                            run_id=f"{inst}-{name}",
-                            exec_config=ExecConfig(), lever=1.0)
-    final = float(res.equity_curve[-1])
-    years = max(len(res.equity_curve) / (24.0 * 365.0), 1e-9)
-    ann = (final / cash) ** (1.0 / years) - 1.0
-    peak, dd = float("-inf"), 0.0
-    for x in res.equity_curve:
-        peak = max(peak, x)
-        if peak > 0:
-            dd = max(dd, 1.0 - x / peak)
-    ts = _doc_trade_stats(res.fills)
-    bh = float(series.close[-1]) / float(series.close[0]) * (1 - 0.0006)
-    eq = np.asarray(res.equity_curve, dtype=np.float64)
-    eq_d, stride = _decimate(eq)
-    result = {
-        "kind": "doc_strategy", "instrument": inst, "doc_strategy": name,
-        "strategy_label": label,
-        "params": {"k": k, "n": n, "stop_pct": stop_pct,
-                   "target_pct": target_pct},
-        "final_equity": final, "total_return": final / cash - 1.0,
-        "annualized": ann, "max_drawdown": dd, "years": years,
-        "bh_annualized": (bh ** (1.0 / years) - 1.0),
-        "n_fills": len(res.fills), "n_decisions": len(res.records),
-        "wall_sec": round(time.time() - t0, 1),
-        **ts,
-    }
-    series_out = {"equity": _vec(eq_d, 2), "strategy_stride": stride,
-                  "pnl_curve": _vec(eq_d - cash, 2)}
-    job.say(f"完成：{ts['n_trades']} 笔，年化 {_fmt(ann)}，"
-            f"回撤 {_fmt(dd * 100, 1)}%，E/笔 {_fmt(ts['E_per_trade'], 1)} 元")
-    return result, series_out
+# ----------------------------------------------------------------------
+# 子模块登记
+# ----------------------------------------------------------------------
+# ⚠️ 必须在**所有** KINDS 使用点之后、模块尾部 import。
+#    `gui/api_doc` 反过来会 `from .api import ...` 拿工具函数，
+#    放在文件末尾可以保证 import 它时 `api` 已经初始化完毕（不成环）。
+#    这一行同时也是「doc_strategy 被登记进 KINDS」的触发点——
+#    删掉它，`validate_spec` 就会开始拒绝 doc_strategy（有测试盯着）。
+import gui.api_doc as _api_doc  # noqa: E402,F401
 
 
 def doc_reports_payload() -> dict:
-    """A14/A15/A16 三份验证报告的摘要（结果 JSON 现算 + 报告文件路径）。"""
-    specs = [
-        ("A14 网格（左尾）", ROOT / "out" / "a14" / "grid_results.json",
-         ROOT / "docs" / "A14-个人交易决策系统方案-验证报告.md"),
-        ("A15 右尾（概率结构）", ROOT / "out" / "a15" / "right_tail.json",
-         ROOT / "docs" / "A15-右尾策略完全手册-验证报告.md"),
-        ("A16 系统实测（本 GUI）", ROOT / "out" / "a16" / "doc_strategies.json",
-         ROOT / "docs" / "A16-两文档策略接入系统-实测报告.md"),
-    ]
-    reports = []
-    for title, jp, mp in specs:
-        item = {"title": title, "report_file": mp.name,
-                "report_exists": mp.exists(), "json_exists": jp.exists()}
-        if jp.exists():
-            try:
-                data = json.loads(jp.read_text(encoding="utf-8"))
-                item["n_rows"] = len(data)
-                if title.startswith("A16"):
-                    g = [x for x in data if x.get("strategy") == "grid_doc"]
-                    rr = [x for x in data if x.get("strategy") == "righttail_doc"]
-                    item["summary"] = {
-                        "grid_annualized": [round(x["annualized"], 4) for x in g],
-                        "righttail_annualized": [round(x["annualized"], 4) for x in rr],
-                        "grid_skew": [round(x["skew"], 2) for x in g],
-                        "righttail_skew": [round(x["skew"], 2) for x in rr],
-                        "righttail_win_rate": [round(x["win_rate"], 3) for x in rr],
-                    }
-                elif title.startswith("A15"):
-                    item["summary"] = {"closed_form_all_match":
-                        bool(data.get("closed_form", {}).get("all_match"))}
-                elif title.startswith("A14"):
-                    item["summary"] = {"n_configs": len(data)}
-            except Exception as exc:  # noqa: BLE001
-                item["error"] = str(exc)
-        reports.append(item)
-    return {"reports": reports}
-
-
-def execute(job: Job) -> tuple[dict, dict | None]:
-    kind = job.kind
-    if kind == "market":
-        return run_market(job)
-    if kind == "strategy":
-        return run_strategy(job)
-    if kind == "lab":
-        return run_lab(job)
-    if kind == "doc_strategy":
-        return run_doc_strategy(job)
-    raise ApiError(f"未知作业类型 {kind!r}")
+    """A14/A15/A16 三份验证报告的摘要（转发到 `gui.api_doc`）。"""
+    return _api_doc.doc_reports_payload()
 
 
 def export_csv(job: Job) -> str:

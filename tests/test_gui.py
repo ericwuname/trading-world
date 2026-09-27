@@ -174,6 +174,147 @@ class TestApiValidate(unittest.TestCase):
         api.validate_spec({"kind": "market", "scenario": "normal", "ticks": 500})
         api.validate_spec({"kind": "strategy", "strategy": "mm_naive", "scenario": "thin"})
 
+    def test_作业类型只有一份事实源(self) -> None:
+        """⭐ 白名单与执行分发必须同源。
+
+        这里原来有**两份** kind 白名单（validate_spec 一份、execute 一份），
+        报错文本还一模一样，加类型时漏改一处就会被自己的错误信息误导。
+        现在两条路径都必须从 `api.KINDS` 派生——这条测试把它钉死。
+        """
+        self.assertEqual(sorted(api.KINDS),
+                         ["doc_strategy", "lab", "market", "strategy"])
+        # 每个登记的类型都能通过校验（否则就是又出现了第二份白名单）
+        for kind in api.KINDS:
+            spec = {"kind": kind}
+            self.assertEqual(api.check_kind(spec), kind)
+
+    def test_执行分发覆盖全部登记类型(self) -> None:
+        """execute() 必须能派发每一个 KINDS 里的类型。
+
+        做法：把每个作业函数替换成哨兵，只验证"派发到了正确的函数"，
+        不真的跑模拟（那要几秒到几分钟）。运行期若走了 if-链的 default 分支，
+        会抛 ApiError 而不是返回哨兵值。
+        """
+        sentinel = lambda job: ({"marker": job.kind}, None)  # noqa: E731
+        for kind in api.KINDS:
+            with self.subTest(kind=kind):
+                saved = api.KINDS[kind]
+                api.KINDS[kind] = sentinel
+                try:
+                    job = Job(id="t", kind=kind, spec={})
+                    result, series = api.execute(job)
+                    self.assertEqual(result["marker"], kind)
+                    self.assertIsNone(series)
+                finally:
+                    api.KINDS[kind] = saved
+
+    def test_未知作业类型报错带可用列表(self) -> None:
+        with self.assertRaises(api.ApiError) as cm:
+            api.validate_spec({"kind": "bogus"})
+        self.assertIn("未知作业类型", cm.exception.message)
+        self.assertIn("可用", cm.exception.message)
+
+    def test_子模块登记了doc_strategy(self) -> None:
+        """⭐ `gui/api_doc.py` 的登记必须真的生效。
+
+        拆模块之后，`doc_strategy` 的登记动作跑在 `gui.api_doc` 里，
+        由 `api.py` 末尾那行 import 触发。**那行 import 一旦被删掉，
+        整条路径会静默地不再存在**（KINDS 里少一个 key，
+        validate_spec 开始拒绝 doc_strategy，而报错看起来像参数写错了）。
+        这条测试就是钉住那行 import。
+        """
+        import gui.api_doc as api_doc
+
+        self.assertIn("doc_strategy", api.KINDS)
+        # 必须是**同一份**注册表，不是各持一份
+        self.assertIs(api_doc.KINDS, api.KINDS)
+        self.assertIs(api.KINDS["doc_strategy"], api_doc.run_doc_strategy)
+
+    def test_文档报告载荷可读(self) -> None:
+        """全局页的数据源：三份报告都要能被列出来（缺文件也要如实说）。"""
+        d = api.doc_reports_payload()
+        titles = [r["title"] for r in d["reports"]]
+        self.assertEqual(len(titles), 3)
+        self.assertTrue(any(t.startswith("A14") for t in titles))
+        self.assertTrue(any(t.startswith("A15") for t in titles))
+        self.assertTrue(any(t.startswith("A16") for t in titles))
+        for r in d["reports"]:
+            self.assertIn("report_exists", r)
+            self.assertIn("json_exists", r)
+
+
+class TestApiDocExtraction(unittest.TestCase):
+    """⭐ 搬模块时的**静默改坏**是真实风险，必须用测试钉住。
+
+    把 `run_doc_strategy` 那一节从 `api.py` 搬进 `api_doc.py` 时，
+    我第一版**顺手重写**了 `_doc_trade_stats` 与 `_doc_load`——
+    结果是：键名从 `total_realized` 变成了 `total`、成本口径从
+    「读 fill 自己的 fee」变成了「另算 12bp」、`_doc_load` 丢了
+    `finally: st.close()`。**三处都不会报错**（JSON 照样出得来），
+    但数字与 A16 对不上了。
+
+    这个类的存在意义：把"这段代码的**可观察契约**"写死，
+    于是"搬动"必须是纯搬动，任何改写都会红。
+    """
+
+    def test_交易统计的键名与成本口径(self) -> None:
+        from gui import api_doc
+
+        class _Fill:
+            def __init__(self, side, qty, price, fee=0.0, slippage_cost=0.0):
+                self.side, self.qty, self.price = side, qty, price
+                self.fee, self.slippage_cost = fee, slippage_cost
+
+        # 一开一平，赚 10 元毛利、花 1 元手续费
+        fills = [_Fill("buy", 1.0, 100.0, fee=0.5, slippage_cost=0.25),
+                 _Fill("sell", 1.0, 110.0, fee=0.5, slippage_cost=0.25)]
+        ts = api_doc._doc_trade_stats(fills)
+        # 键名是契约（A16 报告与前端都按这些 key 取数）
+        for k in ("n_trades", "total_realized", "E_per_trade", "win_rate",
+                  "skew", "fees", "slippage", "net_after_costs"):
+            self.assertIn(k, ts, f"缺少键 {k}（搬模块时被改名了？）")
+        self.assertEqual(ts["n_trades"], 1)
+        # 成本是**从 fill 里读**的：0.5+0.5 手续费、0.25+0.25 滑点
+        self.assertAlmostEqual(ts["fees"], 1.0)
+        self.assertAlmostEqual(ts["slippage"], 0.5)
+        # 毛利 10 − 平仓那笔的手续费 0.5（原实现的口径）
+        self.assertAlmostEqual(ts["total_realized"], 9.5)
+        self.assertAlmostEqual(ts["net_after_costs"], 9.5 - 1.0 - 0.5)
+
+    def test_载入K线后连接必须关掉(self) -> None:
+        """⭐ 搬模块时最容易丢的就是 `finally`。
+
+        `_doc_load` 必须保证异常路径也 `close()`——否则连跑几次失败作业
+        会攒下未关闭的 sqlite 连接。这里用一个假的 marketdb 注入异常，
+        断言 close 被调用过。
+        """
+        import sys
+        import types
+        from gui import api_doc
+
+        closed = {"n": 0}
+
+        class _FakeStore:
+            def load_candles(self, *a, **k):
+                raise RuntimeError("模拟读库失败")
+
+            def close(self):
+                closed["n"] += 1
+
+        fake = types.ModuleType("tw.marketdb")
+        fake.MarketStore = _FakeStore
+        saved = sys.modules.get("tw.marketdb")
+        sys.modules["tw.marketdb"] = fake
+        try:
+            with self.assertRaises(RuntimeError):
+                api_doc._doc_load("BTCUSDT")
+        finally:
+            if saved is not None:
+                sys.modules["tw.marketdb"] = saved
+            else:
+                sys.modules.pop("tw.marketdb", None)
+        self.assertEqual(closed["n"], 1, "异常路径没有 close() —— 连接泄漏")
+
 
 class TestScenarioOverride(unittest.TestCase):
     """⭐ 场景覆盖绝不能写回全局注册表。

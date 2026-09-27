@@ -294,13 +294,16 @@ class Handler(BaseHTTPRequestHandler):
     def _api_post(self, path: str, body: dict) -> None:
         mgr = self.server.manager  # type: ignore[attr-defined]
         if path == "/api/run":
-            kind = str(body.get("kind") or "strategy")
-            body["kind"] = kind
+            # ⚠️ kind 的归一化与校验**只在 api 里做一次**（`api.check_kind` /
+            # `api.validate_spec`）。这里不要自己 `body.get("kind") or "..."`——
+            # 那会造出第三份"默认值 + 白名单"的实现，正是这个项目踩过的坑
+            # （两份同名报错互相遮挡）。让 validate_spec 全权负责。
+            body["kind"] = api.check_kind(body)
             # 提交前先全量校验：参数错了要在**毫秒内**告诉用户，
             # 而不是让他等作业跑完再从日志里翻原因。
             api.validate_spec(body)
-            job = mgr.submit(kind, body, api.execute)
-            return self._json({"job_id": job.id, "kind": kind}, 202)
+            job = mgr.submit(body["kind"], body, api.execute)
+            return self._json({"job_id": job.id, "kind": body["kind"]}, 202)
         if path.startswith("/api/job/") and path.endswith("/cancel"):
             job_id = path[len("/api/job/") : -len("/cancel")]
             ok = mgr.cancel(job_id)

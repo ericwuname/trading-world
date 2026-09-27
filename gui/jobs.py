@@ -49,7 +49,9 @@ class Job:
     """一次后台计算。"""
 
     id: str
-    kind: str                    # market | strategy | lab
+    #: 作业类型。**权威定义在 `gui/api.py::KINDS`**——这里只写一个提示，
+    #: 不要把它当第二份白名单用（曾经因为两处不同步被坑过半小时）。
+    kind: str                    # market | strategy | lab | doc_strategy
     spec: dict                   # 请求参数原样回显（便于复现）
     state: str = "queued"        # queued | running | done | error | cancelled
     progress: float = 0.0        # 0..1

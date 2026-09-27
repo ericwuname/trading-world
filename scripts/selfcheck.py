@@ -348,13 +348,30 @@ def check_hardcoded_numbers(r: Report) -> None:
         r.caution("缺 out/mutation_run.log")
 
     # ③ 测试数
+    #
+    # ⚠️ 这条检查曾经要求「当前实测测试数」出现在二期交付报告里，是**错的**：
+    #    那份报告是一份**历史快照**（"二期结束时 1624 项"），
+    #    后续阶段每加一个测试都会让它"不满足"，于是这条检查会
+    #    逼着人去改一份**不该改**的历史记录——这是把检查器变成了错误的源头。
+    #
+    #    正确的判定是分开两件事：
+    #      · 报告里的数 ≥ 报告自身声称的基线（自洽性，历史记录不许比它当时的基线还小）；
+    #      · **README 的手写数 == 当前实测数**（由 ③b 负责，那才是"活数字"）。
     tc = OUT / "test_count.txt"
     if tc.exists():
-        n = tc.read_text(encoding="utf-8").strip()
-        if n in h:
-            r.good(f"报告里的测试数（{n}）与记录一致")
+        n = int(tc.read_text(encoding="utf-8").strip())
+        base = re.search(r"Ran\s+(\d+)\s+tests", h)
+        rep = re.search(r"单元测试总数[：:]\s*<strong>(\d+)</strong>", h)
+        if rep is None:
+            r.caution("交付报告里没找到「单元测试总数 N 项」，这条检查已失效")
         else:
-            r.bad(f"报告里找不到测试数 {n}")
+            rn = int(rep.group(1))
+            if rn > n:
+                r.bad(f"交付报告写着测试总数 {rn}，超过当前实测 {n} —— 历史记录不可能大于现状")
+            elif base and rn < int(base.group(1)):
+                r.bad(f"交付报告写着 {rn} 项，却低于它自己引用的基线 {base.group(1)} —— 内部矛盾")
+            else:
+                r.good(f"交付报告的测试总数（{rn}，历史快照）≤ 当前实测（{n}），且不低于自身基线")
     else:
         r.caution("缺 out/test_count.txt")
 

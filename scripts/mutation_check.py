@@ -2024,6 +2024,66 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M124',
+        '**作业类型白名单与执行分发重新分叉**（`validate_spec` 不再查 `KINDS`，'
+        '而是退回一份**写死的元组**）——于是「加一种作业」又要改两处，'
+        '而且报错文本同名、定位会指错。这正是本项目被坑过半小时的形态：'
+        '`doc_strategy` 加进 execute 却忘了加进 validate，'
+        '提交时被自己的错误信息拦下。'
+        '⭐ 判据：**同一份"合法性清单"只允许存在一处**——'
+        '能用"派生自同一张表"表达的，就不要用"两处记得同步"表达',
+        [
+            (
+                'gui/api.py',
+                '    kind = check_kind(spec)\n',
+                '    kind = spec.get("kind") or "strategy"\n'
+                '    if kind not in ("market", "strategy", "lab"):\n'
+                '        raise ApiError(f"未知作业类型 {kind!r}")\n',
+            ),
+        ],
+    ),
+    (
+        'M125',
+        '**登记子模块的那行 import 被删掉**（`import gui.api_doc`）——'
+        '`doc_strategy` 于是从 `KINDS` 里**静默消失**：'
+        '界面上点「运行」会得到一句"未知作业类型"，'
+        '而代码看起来完全正常（没有任何语法/导入错误）。'
+        '⚠️ 这是"拆分模块"这一类重构的**专属失效模式**：'
+        '被搬走的代码本身没坏，坏的是"谁来触发它注册"。'
+        '⭐ 判据：**模块级副作用（注册/挂载）必须有测试盯着"它确实生效了"**，'
+        '不能只测"文件能被导入"',
+        [
+            (
+                'gui/api.py',
+                'import gui.api_doc as _api_doc  # noqa: E402,F401\n',
+                '',
+            ),
+        ],
+    ),
+    (
+        'M126',
+        '**`_doc_load` 丢掉 `finally: st.close()`** —— 异常路径不归还 sqlite 连接。'
+        '不报错、数字也对，只是连跑几次失败作业就开始攒未关闭的连接。'
+        '⚠️ 这是"搬模块"时最容易被顺手丢掉的一行（把 `return X` 写成裸返回时），'
+        '而且**没有任何功能性测试会红**——除非专门测异常路径。'
+        '⭐ 判据：**有资源生命周期的函数，它的异常路径要单独被测**'
+        '（测正常路径永远发现不了泄漏）'
+        '⚠️ 变异体必须**保持语法合法**：第一版把整个 `finally` 块换成 `pass`，'
+        '结果 `try:` 没了 except/finally ⇒ 模块直接 ImportError，'
+        '测试因为"导入失败"变红（Ran 1586 而不是 1631）——'
+        '**红的理由不对等于没测到**。改成把 close 挪到只走正常路径。',
+        [
+            (
+                'gui/api_doc.py',
+                '    try:\n        return st.load_candles("binance_csv", inst, "1H", limit=17520)\n'
+                '    finally:\n        st.close()\n',
+                '    out = st.load_candles("binance_csv", inst, "1H", limit=17520)\n'
+                '    st.close()\n'
+                '    return out\n',
+            ),
+        ],
+    ),
 ]
 
 
