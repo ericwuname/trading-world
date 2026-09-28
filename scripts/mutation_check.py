@@ -2303,6 +2303,52 @@ def check_anchors() -> list[str]:
     return bad
 
 
+#: 当前 worker 进程占用的**沙箱槽位**（由 `_worker_init` 填）。
+#:
+#: ⚠️ 为什么按"槽位"而不是按"变异体编号"
+#: ------------------------------------
+#: 原来是每个变异体一个 `w<idx>` 目录，跑完只把**注入的文件还原**、
+#: **不删目录** ⇒ 一次全量回归（131 个）就留下 131 个沙箱、**约 6 GB**。
+#: 实测 `out/_mutation` 已经涨到 **5.5 GB**（杀软还要再扫一遍，
+#: 连带把沙箱里的测试拖慢一个数量级：3 秒 → 87 秒）。
+#:
+#: ⚠️ 而"跑完就删掉那个目录"这条路**走不通**：本环境的批量删除保护会拦
+#: （`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，阈值 50 个文件/次，
+#: 一个沙箱有几百个文件）。⇒ 只能**复用**，不能清理。
+#: 这就解释了那 5.5 GB 是怎么攒出来的：**不是没人想删，是删不掉。**
+#:
+#: 按槽位复用后，峰值 = 并发数 × 沙箱大小（8 × 45MB = 360MB），
+#: 与跑多少个变异体无关。
+_SLOT: int | None = None
+_PKGS: set[str] | None = None
+
+
+def _worker_init(slots, pkgs: set[str]) -> None:
+    """给每个 worker 进程固定一个沙箱槽位（**进程活多久用多久**）。
+
+    ⚠️ 用 ``get_nowait()`` 而不是 ``get()``：万一槽位被领完（例如某个
+    worker 挂掉后被替换），``get()`` 会**永久阻塞**在那个进程里，
+    而表现只是"进度停了"—— 又是一个"跑了很久没输出"型的静默故障。
+    拿不到就退回按变异体编号，慢一点但一定能跑。
+    """
+    global _SLOT, _PKGS
+    try:
+        _SLOT = slots.get_nowait()
+    except Exception:  # noqa: BLE001 - 拿不到槽位不是错误，只是退化
+        _SLOT = None
+    _PKGS = pkgs
+
+
+def sandbox_name(idx: int, slot: int | None) -> str:
+    """沙箱目录名：**有槽位就按槽位复用**，没有才退回按变异体编号。
+
+    ⭐ 单独抽成函数是为了**让"复用"这件事可被断言**：
+    只靠"跑一遍看剩几个目录"验证太慢（一次几十分钟），
+    而这条规则本身是纯函数 —— "同一槽位必得同一目录"就是复用的全部含义。
+    """
+    return f"slot{slot}" if slot is not None else f"w{idx}"
+
+
 def run_one_mutation(job: tuple[int, str, str, list]) -> dict:
     """在**自己的沙箱**里注入一个变异、跑一遍套件、还原。
 
@@ -2310,8 +2356,11 @@ def run_one_mutation(job: tuple[int, str, str, list]) -> dict:
     闭包与 lambda 都不可序列化。
     """
     idx, mid, desc, patches = job
-    work = WORK / f"w{idx}"
-    prepare_sandbox(work, _required_packages())
+    # ⚠️ 沙箱按 **worker 槽位** 取，不按变异体编号（见 `_SLOT` 的说明：
+    #    按编号会让一次全量回归留下 131 个沙箱、约 6 GB，而"跑完就删"
+    #    又被本环境的批量删除保护拦住 ⇒ 只能复用）。
+    work = WORK / sandbox_name(idx, _SLOT)
+    prepare_sandbox(work, _PKGS or _required_packages())
     backups: dict[Path, str] = {}
     try:
         for rel, old, new in patches:
@@ -2397,11 +2446,20 @@ def main() -> int:
 
     # ③ 并行跑选中的变异体
     print(f"\n  并行跑 {len(selected)} 个变异体（{workers} 个 worker，"
-          f"每个 worker 一个独立沙箱）…")
+          f"每个 worker **复用同一个沙箱槽位**）…")
     jobs = [(i, mid, desc, patches)
             for i, (mid, desc, patches) in enumerate(selected)]
     results: dict[str, dict] = {}
     t0 = time.time()
+    # ⚠️ 沙箱槽位：每个 worker 进程领一个（见 `_SLOT` 的说明）。
+    #    多发一倍的槽位，是为了"某个 worker 挂掉被替换后仍能领到"——
+    #    领不到只是退回按编号，不会卡住。
+    import multiprocessing as mp
+
+    slots: mp.Queue = mp.Queue()
+    for i in range(max(1, workers) * 2):
+        slots.put(i)
+    pkgs = _required_packages()
     # ⚠️ 这里**不能**用 ``ex.map``。``map`` 是按**提交顺序**产出结果的：
     #    本套件的 M1 要跑近十分钟，于是前 8 个变异体里只要 M1 没完，
     #    后面的结果一个都打印不出来——**十几分钟完全没有输出**，
@@ -2409,7 +2467,8 @@ def main() -> int:
     #    ``as_completed`` 谁先完谁先报，进度是真的进度。
     #    结果的**顺序**不受影响：下面出总表时是按 ``selected`` 的编号顺序读
     #    ``results`` 的，所以表格仍然稳定可读。
-    with ProcessPoolExecutor(max_workers=workers) as ex:
+    with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init,
+                             initargs=(slots, pkgs)) as ex:
         futs = {ex.submit(run_one_mutation, j): j[1] for j in jobs}
         for fut in as_completed(futs):
             mid = futs[fut]

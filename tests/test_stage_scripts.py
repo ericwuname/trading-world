@@ -629,5 +629,68 @@ class TestNoPackageShadowing(unittest.TestCase):
                 _s.modules["gui"] = cached
 
 
+class TestMutationSandboxSlots(unittest.TestCase):
+    """⭐ 变异沙箱必须**按 worker 槽位复用**，不能每个变异体留一个目录。
+
+    背景（2026-09-28 实测）：原来 `work = WORK / f"w{idx}"`，跑完只把
+    **注入的文件还原**、**不删目录** ⇒ 一次全量回归（131 个）留下 131 个沙箱、
+    约 6 GB；实测 `out/_mutation` 已涨到 **5.5 GB**，
+    顺带把沙箱里的测试拖慢一个数量级（3 秒 → 87 秒）。
+
+    ⚠️ 而"跑完就删"这条路**走不通**：本环境的批量删除保护会拦
+    （阈值 50 个文件/次，一个沙箱有几百个文件）⇒ **只能复用，不能清理**。
+    ⇒ 所以判据是"**同一槽位必得同一目录**"，而不是"记得去删"。
+    """
+
+    def test_同一槽位必得同一目录(self) -> None:
+        from scripts.mutation_check import sandbox_name
+
+        # 复用的全部含义：不同变异体（idx 不同）、同槽位 ⇒ 同一个沙箱目录
+        self.assertEqual(sandbox_name(5, 3), sandbox_name(99, 3))
+        # 并行安全：不同槽位不能撞车
+        self.assertNotEqual(sandbox_name(5, 3), sandbox_name(5, 4))
+        # 退化路径（槽位领完时）：退回按编号，慢但一定能跑
+        self.assertEqual(sandbox_name(5, None), "w5")
+        self.assertNotEqual(sandbox_name(5, None), sandbox_name(6, None))
+
+    def test_领不到槽位要退化而不是卡住(self) -> None:
+        """⚠️ 用 `get_nowait()` 而不是 `get()`：槽位被领完时（例如某个 worker
+        挂掉后被替换），`get()` 会**永久阻塞那个进程**，而表现只是"进度停了"
+        —— 又是一个"跑了很久没输出"型的静默故障。"""
+        from scripts import mutation_check as mc
+
+        class _Q:
+            def __init__(self, items):
+                self.items = list(items)
+
+            def get_nowait(self):
+                if not self.items:
+                    raise RuntimeError("empty")
+                return self.items.pop(0)
+
+        saved = mc._SLOT
+        try:
+            mc._worker_init(_Q([7]), set())
+            self.assertEqual(mc._SLOT, 7)
+            mc._worker_init(_Q([]), set())
+            self.assertIsNone(mc._SLOT, "领不到槽位时必须退化成 None，不能留旧值")
+        finally:
+            mc._SLOT = saved
+
+    def test_池子把槽位分给worker(self) -> None:
+        """`main()` 建池时**必须**带上 initializer —— 漏了的话每个 worker
+        的 `_SLOT` 都是 None，于是又退化成"每个变异体一个目录"，
+        而失败形态是**磁盘慢慢被吃满**，跑测试的人不会立刻发现。"""
+        import inspect
+
+        from scripts import mutation_check as mc
+
+        src = inspect.getsource(mc.main)
+        self.assertIn("initializer=_worker_init", src)
+        self.assertIn("initargs=(slots, pkgs)", src)
+        # 多发一倍槽位：某个 worker 被替换后仍能领到
+        self.assertIn("max(1, workers) * 2", src)
+
+
 if __name__ == "__main__":
     unittest.main()
