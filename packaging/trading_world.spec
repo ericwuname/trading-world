@@ -111,7 +111,16 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,                 # UPX 常被杀软误报，且压缩后启动更慢
-    console=True,              # 首版留控制台便于看错误；正式版可改 False
+    # ⚠️ **无控制台**（2026-09-28 用户要求）。
+    #    代价必须说清：`sys.stdout`/`sys.stderr` 变成 None ⇒ `print` 静默失效。
+    #    所以 `gui/desktop.py` 的失败/降级路径全部改走 `_alert()`
+    #    （没有控制台时弹原生消息框，stdlib ctypes，不写文件）。
+    #    **这两件事必须成对**：只把 console 改成 False 而不改 desktop.py，
+    #    失败就变成"双击没反应"—— 本项目最不想再踩的静默失效。
+    #    另：启动日志（带令牌 URL）也随之不可读，所以给 CLI 加了
+    #    `--token`（仅供自动化验证固定令牌），否则 `packaging/verify_exe.py`
+    #    这类脚本会取不到 token 而被迫弱化验证。
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

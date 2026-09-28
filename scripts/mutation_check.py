@@ -2155,6 +2155,41 @@ MUTATIONS: list[tuple[str, str, list[tuple[str, str, str]]]] = [
             ),
         ],
     ),
+    (
+        'M131',
+        '**`_alert` 只 print，没有第二条渠道**（`gui/desktop.py`）——'
+        '打包成 `console=False` 之后 `sys.stdout`/`sys.stderr` 都是 `None`，'
+        '`print` 是**静默 no-op** ⇒ 三条失败/降级路径（端口探测失败、'
+        'pywebview 加载不了、窗口创建失败）全部变成「**双击没反应**」。'
+        '⚠️ 这是"把 console 改成 False"的**另一半**：只改 spec 不改提示渠道，'
+        '用户就失去了唯一的错误来源。'
+        '⭐ 判据：**凡是"必须让人看到"的提示，都要有一条不依赖 stdout 的渠道**'
+        '（这里是 stdlib ctypes 弹原生消息框，且**不写任何文件**——'
+        '否则"本程序不写用户数据"那句话就不成立了）。'
+        '⚠️⚠️ **这条变异体的第一版是错的，值得单记**：我只把'
+        '`if _has_console(): print(); return` 三行换成了一句 print，'
+        '**下面的 `try: … MessageBoxW(…)` 原样留着** ⇒ 变异后 `_alert` 变成'
+        '"**无条件**弹框"，而测试断言的正是"没有控制台时要弹框"——'
+        '于是它**当然全绿**。**变异体没有复现那个失效，等于没测。**'
+        '⇒ 教训：改完之后要在脑子里过一遍"变异后的代码在测试场景下会走哪条路"，'
+        '而不是只看"锚点匹配上了"。',
+        [
+            (
+                'gui/desktop.py',
+                '    if _has_console():\n'
+                '        print(msg, file=sys.stderr)\n'
+                '        return\n'
+                '    try:\n'
+                '        import ctypes\n'
+                '\n'
+                '        icon = {"error": 0x10, "warn": 0x30, "info": 0x40}.get(kind, 0x30)\n'
+                '        ctypes.windll.user32.MessageBoxW(None, msg, WINDOW_TITLE, icon)\n'
+                '    except Exception:  # noqa: BLE001 - 弹框失败不能带走主流程\n'
+                '        pass\n',
+                '    print(msg, file=sys.stderr)\n',
+            ),
+        ],
+    ),
 ]
 
 

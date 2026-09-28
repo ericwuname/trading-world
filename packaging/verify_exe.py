@@ -19,6 +19,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -61,31 +62,63 @@ def post(path: str, payload: dict, token: str):
         return e.code, e.read()
 
 
+def _grab_token(proc: subprocess.Popen) -> str:
+    """从启动日志里抓 token —— **只在有控制台的构建上可行**。
+
+    ⚠️ `console=False` 的打包版里 `sys.stdout is None`，这段永远读不到东西；
+    更糟的是**父进程的 `readline()` 会一直阻塞到子进程退出**
+    （子进程一个字节都不写，但管道写端还开着）⇒ 会把验证挂死。
+    ⇒ 现在三个验证脚本都不再用它，改成 `--token` 固定 + 真打接口验证。
+    保留这个函数只为在**控制台构建**上排查问题时能手动用一下。
+    """
+    t0 = time.time()
+    while time.time() - t0 < 20:
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                return ""
+            continue
+        m = re.search(r"token=([\w\-]+)", line)
+        if m:
+            return m.group(1)
+    return ""
+
+
+FIXED_TOKEN = "verify-" + uuid.uuid4().hex[:16]
+
 print(f"打包产物实测：{EXE}")
 check("exe 存在", EXE.is_file())
 check("同级 _internal/ 存在", (EXE.parent / "_internal").is_dir())
 
 # ⚠️ 故意换一个 cwd 启动：证明"路径靠相对位置自动正确"，
 #    而不是碰巧当前工作目录帮了忙。
+# ⚠️ `--token` 是**必须**的（`console=False` 的构建打不出启动日志）。
+# ⚠️ 而且这里**不能用 stdout=PIPE 去读日志**：无控制台的子进程一个字节都不写，
+#    父进程的 `readline()` 会**一直阻塞到子进程退出**（实测会把验证挂死）。
+#    ⇒ 直接 DEVNULL，并用**真打一个接口**来证明 token 生效（比读日志更强）。
 proc = subprocess.Popen(
-    [str(EXE), "--no-window", "--port", str(PORT), "--quiet"],
-    cwd=str(EXE.parent.parent), stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    [str(EXE), "--no-window", "--port", str(PORT), "--quiet",
+     "--token", FIXED_TOKEN],
+    cwd=str(EXE.parent.parent), stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL)
 
-token = ""
 try:
-    # 从 stdout 抓"带令牌地址"——这也是保留控制台版的一个实际好处
-    t0 = time.time()
-    while time.time() - t0 < 40 and not token:
-        line = proc.stdout.readline()
-        if not line:
-            if proc.poll() is not None:
+    token = FIXED_TOKEN
+    # 等端口起来（顺便证明 token 真的生效）
+    ready = False
+    for _ in range(120):
+        try:
+            s, _, _ = get("/api/meta", token)
+            if s == 200:
+                ready = True
                 break
-            continue
-        m = re.search(r"token=([\w\-]+)", line)
-        if m:
-            token = m.group(1)
-    check("从启动输出里拿到 token", bool(token), "拿不到就只能测免鉴权路径")
+        except (OSError, urllib.error.URLError):
+            pass
+        time.sleep(0.5)
+    check("--token 生效（用固定令牌打到 /api/meta 200）", ready,
+          "" if ready else "打不通：不是 token 没生效，就是服务没起来")
+    check("token 不是默认随机值（说明参数真的被用上）",
+          len(FIXED_TOKEN) > 8 and token == FIXED_TOKEN)
 
     # ① 首页：离线可用（不加载任何外部资源）
     s, body, _ = get("/")
@@ -118,8 +151,15 @@ try:
             check("三份报告的 JSON 都随包带上了", not miss_j, f"缺 {miss_j}")
             check("三份报告的 md 也随包带上了", not miss_m, f"缺 {miss_m}")
 
-        s, _, _ = get("/api/agent/runs", token)
+        s, body, _ = get("/api/agent/runs", token)
         check("GET /api/agent/runs 返回 200", s == 200, f"status={s}")
+        if s == 200:
+            # ⭐ 硬断言：**运行产物确实随包了**。
+            #    只查状态码是不够的 —— 没打进包时它照样 200（只是列表为空），
+            #    那正是"页面空着但一切正常"的静默形态。
+            runs = json.loads(body).get("runs", [])
+            check("Agent 决策页有可浏览的运行（运行产物随包）", len(runs) > 0,
+                  f"实际 {len(runs)} 个；为 0 说明 out/a4|a5 与 docs/llm-run-* 没打进包")
         s, _, _ = get("/api/real/BTCUSDT_1h", token)
         check("GET /api/real/BTCUSDT_1h 返回 200（真实行情已随包）",
               s == 200, f"status={s}")

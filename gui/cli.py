@@ -31,6 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--workers", type=int, default=None, help="并发作业线程数")
     ap.add_argument("--browser", action="store_true", help="不用原生窗口，直接用浏览器")
     ap.add_argument("--no-window", action="store_true", help="只起服务，不开任何界面")
+    ap.add_argument(
+        "--token", default="",
+        help="固定访问令牌（**仅供自动化验证**；默认每进程随机生成）。"
+             "打包成无控制台的 exe 后启动日志不再可读，验证脚本要靠它才能打接口。")
     ap.add_argument("--quiet", action="store_true")
     return ap
 
@@ -49,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         window=not (args.browser or args.no_window),
         open_browser=not args.no_window,
+        token=args.token,
     )
 
 

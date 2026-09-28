@@ -78,18 +78,26 @@ module 'gui' (most likely due to a circular import)
 
 ```python
 # gui/bundle_data.py
-BUNDLE_DIRS  = ("data", "gui/static", "out/a14", "out/a15", "out/a16")
+BUNDLE_DIRS  = ("data", "gui/static",
+                "out/a14", "out/a15", "out/a16",        # 文档验证页
+                "out/a4", "out/a5",                     # Agent 决策页（运行产物）
+                "docs/llm-run-20260921-a4", "docs/llm-run-20260921")
 BUNDLE_FILES = ("docs/A14-….md", "docs/A15-….md", "docs/A16-….md")
 ```
 
-**划线的依据是「随包内容 vs 运行产物」**：
-A14/A15/A16 三份报告的验证结果是**随包内容**（产品展示的对象，固定）；
-`out/a4`、`out/a5`、`docs/llm-run-*` 是**运行产物**（用工具跑出来的），
-全新安装里没有它们是正常的（前端有诚实的空状态）。
-要一起带上就把目录加进 `BUNDLE_DIRS`（一行，代价 ~31 MB）。
+**划线的依据：用户在安装包里点开每一个标签页，都该看到内容。**
+`out/a4`、`out/a5`、`docs/llm-run-*` 是**运行产物**（不是内置内容），
+第一版判过"不打"（理由：全新安装里没有它们是正常的，前端有空状态），
+用户明确要求「运行产物也打进包」后改成**打** —— 代价 ~31 MB
+（157 MB → 188 MB），换来八个页面全都不是空的。
+
+⚠️ 这是**产品决定，不是技术决定**：技术侧的责任是把代价算清楚
+（+31 MB / zip +12 MB）并留成**一行开关**，别自己替用户拍板。
 
 `tests/test_gui.py::test_打包清单覆盖了界面会读的磁盘文件` 会对照
-`api_doc.DOC_REPORTS` 检查覆盖面 —— 两边各写一份是故意的，**脱节必须被报出来**。
+`api_doc.DOC_REPORTS` 检查覆盖面；
+`test_agent页要扫描的目录也随包` 会对照 `agent_api.RUN_DIRS` 检查 ——
+两边各写一份是故意的，**脱节必须被报出来**。
 
 ### 2c. ⚠️ 重建时先"回收"旧产物（环境会拦批量删除）
 
@@ -118,6 +126,26 @@ python -m PyInstaller --noconfirm --clean --distpath out/_package/dist \
 
 `upx=True` 常在杀软里被误报，且压缩后启动更慢。spec 里显式关掉了。
 
+## 界面形态与 console 的取舍（**成对改动**）
+
+**当前是 `console=False`（无黑窗）**。这是用户 2026-09-28 明确要求的，
+但它**必须成对**做两件事 —— 只改 spec 会引入本项目最反对的那类失效：
+
+| 改什么 | 不改会怎样 |
+|---|---|
+| `spec` 里 `console=False` | —— |
+| `gui/desktop.py` 的失败提示改走 `_alert()`（无控制台时弹原生消息框） | `sys.stdout`/`sys.stderr` 变成 `None`，`print` 是**静默 no-op** ⇒ 三条失败路径（端口探测失败 / pywebview 加载不了 / 窗口创建失败）全部变成「**双击没反应**」 |
+| `gui/cli.py` 加 `--token` | 启动日志（含带令牌 URL）也不再可读 ⇒ `verify_exe.py` 这类脚本**取不到 token**，只能放弃 `/api/*` 的验证 |
+
+`_alert()` 的设计：有控制台就 `print`，**没有才弹框**（`ctypes.windll.user32.MessageBoxW`，
+stdlib、**不写任何文件** —— 否则安装说明里"本程序不写用户数据"那句就不成立了）。
+"弹不弹"由"有没有控制台"决定，而那个条件在测试里天然为假
+⇒ 这条逻辑是**可测的**（见 `tests/test_gui.py::test_无控制台时失败要说给人听`），
+变异体 **M131** 盯着它。
+
+`--token` 是**仅供自动化**的固定令牌（默认仍是每进程随机，安全模型没让步）；
+验证脚本一律带上它。
+
 ## 怎么验证打包结果（**不要只看"打包成功"**）
 
 打包成功 ≠ 能运行。**已脚本化**（比手敲 curl 可靠，且能覆盖响应头/BOM 这类
@@ -125,15 +153,18 @@ python -m PyInstaller --noconfirm --clean --distpath out/_package/dist \
 
 ```bash
 # ① 把 exe 当黑盒打真接口（含真跑一个作业、导出 CSV、无 token 被拒）
-python packaging/verify_exe.py out/_package/dist/TradingWorld/TradingWorld.exe 8795
+python packaging/verify_exe.py
 
 # ② 视觉验证：起服务 → 无头截图 → 然后**必须打开图看一眼**
-python packaging/shot_exe.py out/_package/截图.png          # 首页
-python packaging/shot_exe.py out/_package/截图-文档.png docverify   # 指定标签页
+python packaging/shot_exe.py out/_package/截图.png            # 首页
+python packaging/shot_exe.py out/_package/截图-agent.png agent  # 指定标签页
 
 # ③ 安装包：安装 → 运行 → 卸载（全静默，/NOICONS 不碰桌面与开始菜单）
 python packaging/verify_setup.py
 ```
+
+⚠️ 三个脚本都用 `--token` 固定令牌启动 ——
+**无控制台的构建读不到启动日志**，不固定就抓不到 token。
 
 `verify_exe.py` 覆盖：`/`（离线可用）→ `/api/meta` → `/api/doc/reports`
 （**三份报告 JSON 与 md 都在包里**）→ `/api/agent/runs` → `/api/real/<sym>`
@@ -201,5 +232,7 @@ python packaging/make_dist.py
 
 - [ ] 加图标（`.ico`）。有图标后 spec 的 `EXE(icon=...)` 与 iss 的
       `SetupIconFile` 都能用上，看起来会正式很多。
+- [x] ~~正式版把 `console=True` 改成 `False`~~（2026-09-28 已完成，
+      配套改了 `desktop._alert` 与 CLI 的 `--token`，见上面那节）。
 - [ ] 若要让没装 WebView2 的机器也能跑，可以把 WebView2 的固定版运行时
       一起打进去（代价：体积 +100~150 MB）。

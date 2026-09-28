@@ -11,6 +11,13 @@ pywebview 在 Windows 上依赖 **WebView2 运行时**（Edge 自带，通常有
 开得出原生窗口最好；开不出就开浏览器，功能一模一样，
 只是少了那个没有地址栏的窗口。
 
+⚠️ 无控制台的打包版（`console=False`）与"看得见降级"
+----------------------------------------------------
+打包成无控制台后 `sys.stdout`/`sys.stderr` 都是 `None`，`print` 变成
+**静默 no-op** ⇒ 上面那三条降级/失败路径会变成「**双击没反应**」。
+所以凡是"必须让人看到"的话一律走 :func:`_alert`：
+有控制台就打印，**没有就弹原生消息框**（stdlib ctypes，不写文件）。
+
 线程模型（pywebview 的硬约束）
 ------------------------------
 ``webview.start()`` **阻塞主线程**，所以 HTTP 服务必须跑在后台线程里。
@@ -51,9 +58,44 @@ def _default_workers() -> int:
     return max(1, min(4, cpu // 2))
 
 
-def serve(workers: int | None = None, port: int = 0) -> GuiServer:
+def _has_console() -> bool:
+    """当前进程有没有真的能写字的控制台。
+
+    ⚠️ 打包成**无控制台**（`console=False`）的 exe 里，PyInstaller 会把
+    `sys.stdout` / `sys.stderr` 都设成 `None` —— 此时 `print` 是**静默 no-op**。
+    （CPython 的 `print` 遇到 `file=None` 会退回 `sys.stdout`，而它是 None
+    就直接返回，不报错。）所以"有没有控制台"必须显式判，不能靠 print。
+    """
+    return sys.stdout is not None and sys.stderr is not None
+
+
+def _alert(msg: str, *, kind: str = "warn") -> None:
+    """说一句**必须让人看到**的话：没有控制台时弹原生消息框。
+
+    ⚠️ 为什么不能只 `print`：无控制台的打包版里 print 会被丢掉 ⇒
+    失败变成「**双击没反应**」，正是本项目最不想再踩的静默失败。
+    ⇒ 没有控制台时用 stdlib `ctypes` 弹一个消息框
+    （**不写任何文件** —— 安装说明里"本程序不写用户数据"那句话必须仍然成立）。
+
+    ⚠️ 有控制台时**不弹框**：一是没必要，二是测试环境有 stdout，
+    弹框会把自动化卡在"等人点确定"上。于是"弹不弹"由"有没有控制台"决定，
+    而那个条件在测试里天然为假 ⇒ **这条逻辑是可测的**。
+    """
+    if _has_console():
+        print(msg, file=sys.stderr)
+        return
+    try:
+        import ctypes
+
+        icon = {"error": 0x10, "warn": 0x30, "info": 0x40}.get(kind, 0x30)
+        ctypes.windll.user32.MessageBoxW(None, msg, WINDOW_TITLE, icon)
+    except Exception:  # noqa: BLE001 - 弹框失败不能带走主流程
+        pass
+
+
+def serve(workers: int | None = None, port: int = 0, token: str = "") -> GuiServer:
     """只起服务，不开窗口（给 --no-window 与自动化验证用）。"""
-    srv = GuiServer(workers=workers or _default_workers(), port=port)
+    srv = GuiServer(workers=workers or _default_workers(), port=port, token=token)
     srv.start_background()
     return srv
 
@@ -64,6 +106,7 @@ def run(
     port: int = 0,
     window: bool = True,
     open_browser: bool = True,
+    token: str = "",
 ) -> int:
     # 强制行缓冲。默认情况下 stdout 重定向到文件/管道时是块缓冲的，
     # 启动信息会一直卡在缓冲区里——用户看不到 URL，而我用 `timeout 20` 之类的
@@ -75,9 +118,10 @@ def run(
     except (AttributeError, ValueError):  # pragma: no cover
         pass
 
-    srv = serve(workers=workers, port=port)
+    srv = serve(workers=workers, port=port, token=token)
     if not srv.wait_ready():
-        print("❌ HTTP 服务没能启动（端口探测失败）", file=sys.stderr)
+        _alert("HTTP 服务没能启动（端口探测失败）。\n"
+               "常见原因：端口被占用。可换一个 --port 再试。", kind="error")
         return 2
 
     print(f"   服务地址  {srv.base_url}")
@@ -100,8 +144,8 @@ def run(
     try:
         import webview  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001
-        print(f"   ⚠️ 无法加载 pywebview（{type(exc).__name__}: {exc}）")
-        print("   → 退回浏览器模式")
+        _alert(f"原生窗口不可用（{type(exc).__name__}: {exc}）\n"
+               f"已改用系统浏览器打开 —— 功能完全一样。", kind="info")
         return _browser_mode(srv)
 
     try:
@@ -116,8 +160,8 @@ def run(
         )
         webview.start(debug=os.environ.get("TW_GUI_DEBUG", "0") != "0")
     except Exception as exc:  # noqa: BLE001
-        print(f"   ⚠️ 窗口启动失败（{type(exc).__name__}: {exc}）")
-        print("   → 退回浏览器模式")
+        _alert(f"窗口启动失败（{type(exc).__name__}: {exc}）\n"
+               f"已改用系统浏览器打开 —— 功能完全一样。", kind="info")
         return _browser_mode(srv)
     finally:
         srv.stop()

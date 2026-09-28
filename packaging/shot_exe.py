@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,23 +32,20 @@ if not EDGE.is_file():
 if not EXE.is_file():
     raise SystemExit(f"找不到打包产物：{EXE}（先跑 PyInstaller）")
 
-proc = subprocess.Popen(
-    [str(EXE), "--no-window", "--port", str(PORT), "--quiet"],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    encoding="utf-8", errors="replace")
+# ⚠️ `console=False` 的构建里 `sys.stdout is None`，启动日志读不到 ⇒
+#    必须用 `--token` 固定一个，否则拼不出带令牌的 URL（截图会拍到错误页）。
+# ⚠️ 也**不能**用 stdout=PIPE 去读日志：子进程不写字，
+#    父进程 `readline()` 会一直阻塞到子进程退出。
+FIXED_TOKEN = "shot-" + uuid.uuid4().hex[:16]
 
-token = ""
+proc = subprocess.Popen(
+    [str(EXE), "--no-window", "--port", str(PORT), "--quiet",
+     "--token", FIXED_TOKEN],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+token = FIXED_TOKEN
 try:
-    t0 = time.time()
-    while time.time() - t0 < 40 and not token:
-        line = proc.stdout.readline()
-        if not line:
-            if proc.poll() is not None:
-                break
-            continue
-        m = re.search(r"token=([\w\-]+)", line)
-        if m:
-            token = m.group(1)
+    url = f"http://127.0.0.1:{PORT}/?token={token}"
 
     url = f"http://127.0.0.1:{PORT}/?token={token}"
     if TAB:

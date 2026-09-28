@@ -14,14 +14,17 @@ HTTP 层的测试会真的起一个服务，用无代理的 opener 直连回环�
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import sys
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 # ⚠️ **强制置顶，不要"已在就跳过"**：别的测试文件可能先插了
@@ -280,8 +283,82 @@ class TestApiValidate(unittest.TestCase):
         self.assertTrue(bundle_data.covers("data/market.sqlite"))
         self.assertTrue(bundle_data.covers("gui/static/index.html"))
         self.assertTrue(bundle_data.covers("out/a16/doc_strategies.json"))
-        # 运行产物**不在**清单里（Agent 页在全新安装里为空是正常的）
-        self.assertFalse(bundle_data.covers("out/a5/dec_v2_BTC.jsonl"))
+        # 运行产物**是要**随包的（用户 2026-09-28 明确要求：
+        # "八个页面全都不是空的"）—— 代价 ~31 MB，见 bundle_data 的模块文档
+        self.assertTrue(bundle_data.covers("out/a5/dec_v2_BTC.jsonl"))
+
+    def test_agent页要扫描的目录也随包(self) -> None:
+        """⭐ 把"运行产物也打进包"这条**产品决定**钉住。
+
+        `agent_api.RUN_DIRS` 是 Agent 决策页**扫描**的固定目录清单 ——
+        出现新增目录而打包清单没跟上，那一页就会少几个可浏览的运行
+        （不报错，只是列表变短）。⇒ 两边必须一起动。
+        """
+        from gui import bundle_data
+
+        for rel in agent_api.RUN_DIRS:
+            self.assertTrue(
+                bundle_data.covers(rel),
+                f"agent_api.RUN_DIRS 里的 {rel} 没被打包清单覆盖 —— "
+                f"Agent 决策页在安装包里会少运行",
+            )
+
+    def test_可以固定访问令牌(self) -> None:
+        """⚠️ 无控制台的打包版里 `sys.stdout is None`，**启动日志根本打不出来**
+        ⇒ 验证脚本取不到 token，只能被迫弱化验证（不打 `/api/*`）。
+        所以给了 `--token`（**仅供自动化**，默认仍是每进程随机）。"""
+        # ⚠️ 这里**不能**调 `srv.stop()`：`stop()` 走的是
+        # `httpd.shutdown()`，而它要等 `serve_forever()` 退出 —— 没起循环时
+        # 会**死锁**（标准库的已知约束，实测把测试挂死过一次）。
+        # 只想释放端口，用 `server_close()` 就够。
+        srv = GuiServer(port=0, workers=1, token="fixed-for-test")
+        try:
+            self.assertEqual(srv.token, "fixed-for-test")
+        finally:
+            srv.httpd.server_close()
+        # 不传时仍是随机 —— 安全模型没有让步
+        srv2 = GuiServer(port=0, workers=1)
+        try:
+            self.assertNotEqual(srv2.token, "fixed-for-test")
+            self.assertGreaterEqual(len(srv2.token), 24)
+        finally:
+            srv2.httpd.server_close()
+
+    def test_无控制台时失败要说给人听(self) -> None:
+        """⭐ `console=False` 之后 `print` 是**静默 no-op**
+        （PyInstaller 把 `sys.stdout`/`sys.stderr` 设成 None）。
+        如果失败路径还只靠 print，用户看到的就是「**双击没反应**」
+        —— 本项目最不想再踩的静默失效。
+
+        ⇒ 没有控制台时必须换一条渠道（弹原生消息框，stdlib ctypes，不写文件）。
+        """
+        from gui import desktop
+
+        # 有控制台：走打印，**不弹框**（否则测试会被卡在"等人点确定"上，
+        # 打包验证也会卡住）——所以"弹不弹"由"有没有控制台"决定，
+        # 而那个条件在测试里天然为假 ⇒ 这条逻辑可测。
+        self.assertTrue(desktop._has_console())
+        buf = io.StringIO()
+        with mock.patch.object(sys, "stderr", buf):
+            desktop._alert("有控制台，只打印", kind="error")
+        self.assertIn("有控制台，只打印", buf.getvalue(), "有控制台时该打印出来")
+
+        seen: list[tuple] = []
+        fake_user32 = types.SimpleNamespace(
+            MessageBoxW=lambda *a: seen.append(a) or 1)
+        with mock.patch.object(sys, "stdout", None), \
+                mock.patch.object(sys, "stderr", None):
+            import ctypes
+
+            with mock.patch.object(ctypes, "windll",
+                                   types.SimpleNamespace(user32=fake_user32),
+                                   create=True):
+                desktop._alert("没人看得到的消息", kind="error")
+                self.assertFalse(desktop._has_console())
+
+        # 断言放在 with 外面：万一失败，unittest 还能正常打印回溯
+        self.assertEqual(len(seen), 1, "没有控制台时必须弹框，否则用户什么都看不到")
+        self.assertIn("没人看得到的消息", str(seen[0]))
 
 
 class TestRoutes(unittest.TestCase):

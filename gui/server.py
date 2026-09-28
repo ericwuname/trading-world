@@ -285,8 +285,13 @@ class GuiServer:
     """把 HTTP 服务跑在后台线程里，并暴露访问地址。"""
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-                 workers: int = 1) -> None:
-        self.token = secrets.token_urlsafe(24)
+                 workers: int = 1, token: str = "") -> None:
+        #: ⚠️ 默认**每进程随机**（`token_urlsafe(24)`）。`token=` 只给
+        #: **自动化验证**用 —— 无控制台的打包版里 `sys.stdout is None`，
+        #: 启动日志（含带令牌 URL）根本打不出来，验证脚本就取不到 token。
+        #: 有固定 token 才能在"无控制台版"上照样把 `/api/*` 打一遍。
+        #: 这不是安全让步：它来自命令行/调用方，默认仍是随机的。
+        self.token = token or secrets.token_urlsafe(24)
         self.httpd = _Server((host, port or 0), Handler)
         self.httpd.token = self.token          # type: ignore[attr-defined]
         self.httpd.manager = api.manager(workers)  # type: ignore[attr-defined]

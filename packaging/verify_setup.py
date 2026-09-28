@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,7 +45,14 @@ def check(label: str, cond: bool, extra: str = "") -> None:
 
 
 if TARGET.exists():
-    shutil.rmtree(TARGET, ignore_errors=True)
+    # ⚠️ 本环境的**批量删除保护**会拦下 rmtree（>50 个文件/次）：
+    #    上一次跑崩掉留下的安装目录会让这一次**连启动都做不到**。
+    #    ⇒ 删不掉就换一个全新目录继续（验证本身不能因为"上次的残留"而失败）。
+    try:
+        shutil.rmtree(TARGET)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️ 清不掉上次的残留（{type(exc).__name__}）⇒ 换一个全新目录继续")
+        TARGET = TARGET.with_name(TARGET.name + "-" + uuid.uuid4().hex[:6])
 TARGET.mkdir(parents=True, exist_ok=True)
 
 print(f"① 静默安装到 {TARGET.name}/（/NOICONS：不写桌面与开始菜单）")
@@ -61,24 +69,16 @@ check("随包数据也装进来了（out/a16）", (TARGET / "_internal" / "out" 
 check("卸载程序已注册（unins000.exe）", (TARGET / "unins000.exe").is_file())
 
 print("② 运行装好的程序，打真接口")
+# ⚠️ `console=False` 的构建读不到启动日志 ⇒ 用 `--token` 固定一个；
+#    也**不能**用 stdout=PIPE 去读：子进程不写字，
+#    父进程 `readline()` 会一直阻塞到子进程退出。
+FIXED_TOKEN = "setup-" + uuid.uuid4().hex[:16]
 proc = subprocess.Popen(
-    [str(exe), "--no-window", "--port", str(PORT), "--quiet"],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    encoding="utf-8", errors="replace")
-token = ""
+    [str(exe), "--no-window", "--port", str(PORT), "--quiet",
+     "--token", FIXED_TOKEN],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+token = FIXED_TOKEN
 try:
-    t0 = time.time()
-    while time.time() - t0 < 40 and not token:
-        line = proc.stdout.readline()
-        if not line:
-            if proc.poll() is not None:
-                break
-            continue
-        m = re.search(r"token=([\w\-]+)", line)
-        if m:
-            token = m.group(1)
-    check("拿到 token", bool(token))
-
     def get(path, tok=""):
         req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}")
         if tok:
@@ -86,6 +86,25 @@ try:
         with OP.open(req, timeout=30) as resp:
             return resp.status, resp.read()
 
+    # 等端口起来（顺便证明 --token 真的生效）
+    # ⚠️ 连接被拒时抛的是 `urllib.error.URLError` —— 它**是** OSError 的子类，
+    #    但这行必须写全：一旦漏了，脚本会在"服务还没起来"时**自己崩掉**，
+    #    而不是报一条 FAIL。验证脚本的职责是**报告**失败，不是替它崩。
+    # ⚠️ 窗口给到 180 秒：**全新安装的程序第一次启动要被杀软全量扫一遍**
+    #    （180MB / 400+ 个文件），实测 60 秒不够 —— 那次"连接被拒"
+    #    就是这么来的（不是程序坏了）。
+    ready = False
+    for _ in range(360):
+        try:
+            s, _ = get("/api/meta", token)
+            if s == 200:
+                ready = True
+                break
+        except (OSError, urllib.error.URLError):
+            pass
+        time.sleep(0.5)
+    check("--token 生效（用固定令牌打到 /api/meta 200）", ready,
+          "" if ready else f"{PORT} 端口 180 秒内一直连不上：装好的程序没起来？")
     s, b = get("/")
     check("GET / 200 且含「交易世界」",
           s == 200 and "交易世界" in b.decode("utf-8", "replace"))
