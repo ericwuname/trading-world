@@ -833,6 +833,13 @@ def execute(job: Job) -> tuple[dict, dict | None]:
 #    删掉它，`validate_spec` 就会开始拒绝 doc_strategy（有测试盯着）。
 import gui.api_doc as _api_doc  # noqa: E402,F401
 
+# 交易终端的端点也在文件末尾登记（理由同上：避免 import 成环）。
+# ⚠️ **这一行是「/api/terminal/* 全部端点存在」的唯一触发点** ——
+#    删掉它，`@route` 装饰器不会执行 ⇒ 前端 404，而 `terminal_api` 的
+#    单测（直接调函数）**照样全绿**。这正是 M127 那个失效形态
+#    （"端点的可访问性必须被单独测"），所以有测试盯这一行。
+import gui.terminal_api as _terminal_api  # noqa: E402,F401
+
 
 def doc_reports_payload() -> dict:
     """A14/A15/A16 三份验证报告的摘要（转发到 `gui.api_doc`）。"""

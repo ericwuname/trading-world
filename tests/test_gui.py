@@ -790,5 +790,86 @@ class TestHttpServer(unittest.TestCase):
         self.assertIn(b"pnl_capture", b)
 
 
+class TestTerminalApi(unittest.TestCase):
+    """交易终端的接口（S2）。
+
+    ⭐ 重点不是"函数能调"，而是**端点真的能被 URL 命中** ——
+    删掉 `api.py` 末尾那行登记 import，处理函数的单测照样全绿，
+    而前端一律 404（M127 那个失效形态：端点的可访问性必须被单独测）。
+    """
+
+    @staticmethod
+    def _ctx(method: str, path: str, body: dict | None = None,
+             query: dict | None = None):
+        from pathlib import Path
+
+        from gui.routes import Ctx
+
+        return Ctx(method=method, path=path, body=body or {}, root=Path.cwd(),
+                   mgr=None, params={}, query=query or {})
+
+    def test_交易终端的端点都登记在表里(self) -> None:
+        from gui.routes import ROUTES
+
+        paths = {r.pattern for r in ROUTES}
+        for p in ("/api/terminal/state", "/api/terminal/step",
+                  "/api/terminal/order", "/api/terminal/cancel",
+                  "/api/terminal/reset", "/api/terminal/scenarios"):
+            self.assertIn(p, paths, f"{p} 没登记 —— 前端会 404")
+
+    def test_取状态能拿到画图要的四样东西(self) -> None:
+        """bars / book / account / cursor —— 少一样前端就画不出来。"""
+        from gui.terminal_api import api_terminal_state
+
+        st = api_terminal_state(self._ctx("GET", "/api/terminal/state"))
+        for k in ("bars", "book", "account", "cursor", "cfg", "agg"):
+            self.assertIn(k, st)
+        self.assertIn("bids", st["book"])
+        self.assertIn("asks", st["book"])
+        self.assertIn("orders", st["account"])
+
+    def test_推进与下单会回带最新状态(self) -> None:
+        """⭐ 每个改状态的接口都必须**回带全量 state**。
+        否则前端要发两次请求，中间那一瞬间状态是可变的
+        ⇒ 会出现「订单成交了但图上还没反映」这类像 bug 的时序问题。"""
+        from gui.terminal_api import api_terminal_order, api_terminal_step
+
+        r = api_terminal_step(self._ctx("POST", "/api/terminal/step", {"n": 5}))
+        self.assertIn("state", r)
+        self.assertEqual(r["step"]["cursor"], 5)
+        self.assertEqual(len(r["state"]["bars"]), 5)
+
+        cur = r["state"]["book"]["mid"]
+        o = api_terminal_order(self._ctx(
+            "POST", "/api/terminal/order",
+            {"side": "buy", "qty": 0.5, "price": cur * 0.999, "type": "limit"}))
+        self.assertIn("state", o, "下单后必须回带 state")
+        self.assertTrue(o["order"]["ok"])
+        self.assertTrue(o["order"]["resting"], "低于卖一的限价单应挂上不成交")
+        self.assertEqual(o["order"]["n_trades"], 0)
+        self.assertEqual(len(o["state"]["account"]["orders"]), 1)
+
+    def test_参数错要报ApiError而不是变成服务端错误(self) -> None:
+        """甲方的错要报成"你写错了"，不能报成"服务器坏了" ——
+        否则排查方向会被带偏（项目踩过：`int(query.get(k))` 抛 TypeError → 500）。"""
+        from gui.routes import ApiError
+        from gui.terminal_api import (api_terminal_cancel, api_terminal_order,
+                                      api_terminal_reset, api_terminal_step)
+
+        cases = [
+            (api_terminal_order, {"side": "hold", "qty": 1}),
+            (api_terminal_order, {"side": "buy", "qty": 0}),
+            (api_terminal_order, {"side": "buy", "qty": "abc"}),
+            (api_terminal_order, {"side": "buy", "qty": 1, "type": "iceberg"}),
+            (api_terminal_step, {"n": "many"}),
+            (api_terminal_reset, {"scenario": "不存在的场景"}),
+            (api_terminal_cancel, {}),
+        ]
+        for fn, body in cases:
+            with self.subTest(fn=fn.__name__, body=body):
+                with self.assertRaises(ApiError):
+                    fn(self._ctx("POST", "/api/terminal/x", body))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main(verbosity=2)
