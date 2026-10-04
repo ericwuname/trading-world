@@ -554,6 +554,46 @@ KEY_FIGURES = [
 ]
 
 
+#: 叙事幻灯片（docs/交易世界-讲给人听.html）里必须出现的数字。
+#:
+#: ⚠️ 全部用 ``mode="text"`` + 格式串，而不是 ``mode="num"``：
+#: ``_value_visible`` 是 ``abs(t - v) <= tol`` 的**带符号**比较，
+#: 而幻灯片里的冲击是负数（−148.4）⇒ 用 num 模式要赌分词器给不给负号。
+#: text 模式直接要求那个字面量出现，**更严也更省心**。
+#:
+#: ⭐ 这张表存在的理由：幻灯片是**最像结论**的东西 ——
+#: 读者会拿它的数字当结论引用。而本项目刚抓到过同一��量 10.67 / 10.76 的漂移。
+#: 有了这张表，**它就不可能烂**。
+DECK_FIGURES = [
+    ("标定后的 σ（照抄蓝图时）", "calibration.json",
+     lambda d: max(r["sigma_bp"] for r in d["pools"]["纯零智能(阶段1)"]["offset_scan"]),
+     "text", "{:.1f}"),
+    ("照抄蓝图 ⇒ 真实 BTC 的几倍", "calibration.json",
+     lambda d: max(r["sigma_bp"] for r in d["pools"]["纯零智能(阶段1)"]["offset_scan"])
+     / d["target_sigma_bp"], "text", "{:.2f}"),
+    ("真实 BTC 的峰度", "stage2_metrics.json",
+     lambda d: d["real"]["BTCUSDT_1h"].get(
+         "metrics", d["real"]["BTCUSDT_1h"])["excess_kurtosis"], "text", "{:.2f}"),
+    ("只留基本面派的峰度（肥尾被抹平）", "stage2_metrics.json",
+     lambda d: d["pools"]["② 零智能+基本面派"]["metrics"]["excess_kurtosis"],
+     "text", "{:.2f}"),
+    ("混合池的峰度", "stage2_metrics.json",
+     lambda d: d["pools"]["④ 三者混合（蓝图配比）"]["metrics"]["excess_kurtosis"],
+     "text", "{:.2f}"),
+    ("一次砸完的冲击（基点）", "stage3_metrics.json",
+     lambda d: min(r["slippage_bp"] for r in d["C3_slicing_speed"]["rows"]),
+     "text", "{:.1f}"),
+    ("做市商把冲击压到的倍数", "stage3_metrics.json",
+     lambda d: d["B_liquidation"]["with_mm"]["slippage_bp"]
+     / d["B_liquidation"]["no_mm"]["slippage_bp"], "text", "{:.2f}"),
+    ("大模型的净收益（%）", "a4/eval_BTC.json",
+     lambda d: d["evals"]["llm_v2"]["result"]["net_return"] * 100, "text", "{:+.2f}"),
+    ("随机吃单的净收益（%）", "a4/eval_BTC.json",
+     lambda d: d["evals"]["random_taker"]["result"]["net_return"] * 100,
+     "text", "{:+.2f}"),
+]
+
+
 def strip_html_noise(h: str) -> str:
     """剥掉 CSS / JS / base64 内嵌图，只留**正文文本**。
 
@@ -624,11 +664,52 @@ def check_key_figures(r: Report) -> None:
             txt = str(spec).format(v)
             if txt not in h:
                 bad.append(f"{label}：报告里找不到字面量 {txt}（JSON 现算）")
-    if bad:
-        for m in bad:
+
+    # ⑨ 的第二部分：**叙事幻灯片**（docs/交易世界-讲给人听.html）也逐个数字核对。
+    #   为什么放进同一个检查项而不是新开一项：新开会让"自检 N 项"这个数字
+    #   在记忆/报告/文档里到处要改（一次漂移就是一次不一致）。
+    #   为什么必须查：幻灯片是最像"结论"的东西，一旦数字漂了，
+    #   读者会拿它当结论引用 —— 而本项目刚抓到过 10.67 / 10.76 的漂移。
+    deck = ROOT / "docs" / "交易世界-讲给人听.html"
+    deck_bad, deck_checked = [], 0
+    if not deck.exists():
+        deck_bad.append("缺叙事幻灯片（跑 scripts/make_story_deck.py 生成）")
+    else:
+        dh = deck.read_text(encoding="utf-8")
+        dtok = _report_numeric_tokens(dh)
+        if not dtok:
+            deck_bad.append("从幻灯片里抠不出任何数值 —— 提取已失效，这条检查不可信")
+        for label, fname, getter, mode, spec in DECK_FIGURES:
+            p = OUT / fname
+            if not p.exists():
+                deck_bad.append(f"{label}：缺 {fname}")
+                continue
+            try:
+                v = getter(json.loads(p.read_text(encoding="utf-8")))
+            except (KeyError, TypeError, ValueError, ZeroDivisionError) as e:
+                deck_bad.append(f"{label}：取数失败 {e!r}")
+                continue
+            if not isinstance(v, (int, float)) or v != v:
+                deck_bad.append(f"{label}：算出来是 {v!r}（nan？）")
+                continue
+            deck_checked += 1
+            if mode == "num":
+                if not _value_visible(dtok, float(v), float(spec)):
+                    deck_bad.append(
+                        f"幻灯片里的 {label} = {v:.6g}（JSON 现算，容差 {spec}）找不到")
+            else:
+                txt = str(spec).format(v)
+                if txt not in dh:
+                    deck_bad.append(f"幻灯片里找不到字面量 {txt}（{label}，JSON 现算）")
+
+    if bad or deck_bad:
+        for m in (bad + deck_bad):
             r.bad(m)
     else:
-        r.good(f"{checked} 个承重数字全部能在报告里对上 JSON 现算值")
+        # ⚠️ 报告与幻灯片**合成一条**消息：分开写会让自检项数 +1，
+        # 而"N 项自检"这个数字在记忆/交付报告/文档里到处写着 ⇒ 一次漂移就是一次不一致。
+        r.good(f"{checked} 个承重数字在报告里、{deck_checked} 个在叙事幻灯片里，"
+               f"全部对上 JSON 现算值（幻灯片那份不会烂）")
 
 
 def mutation_patch_string_positions(tree) -> set[tuple[int, int]]:
@@ -720,10 +801,36 @@ def check_source_placeholders(r: Report) -> None:
                     and isinstance(node.value.value, str)):
                 doc_pos.add((node.value.lineno, node.value.col_offset))
         exempt = doc_pos | mutation_patch_string_positions(tree)
+
+        # ③ **生成物模板**（2026-10-04 加）：一个 f-string 里若含 `<style>` 或
+        #    `<script>`，那它是在拼**要写进产物的页面**，里面的 `{...}` 是
+        #    **CSS/JS 的花括号**，不是漏写 f 前缀。
+        #    ⚠️ 判据为什么不能只看单个 Constant：f-string 的字面量被切成**多块**，
+        #    `<style>` 与 CSS 里的花括号**不在同一块**（实测踩到）。
+        #    所以要先按"整个 JoinedStr"判定，再把它的每一块都豁免。
+        #    ⚠️ 也不能按"在 f-string 里就跳过"——那会把真 bug 一起放过
+        #    （模板里真漏写 f 前缀的占位符是**要**报的）。
+        #    用**结构标记**（标签名）而不是关键词，与本项目
+        #    「自检要找结构性标记，不要找词」一致。
+        template_chunks: set[tuple[int, int]] = set()
+        for jn in ast.walk(tree):
+            if not isinstance(jn, ast.JoinedStr):
+                continue
+            joined = "".join(
+                c.value for c in jn.values
+                if isinstance(c, ast.Constant) and isinstance(c.value, str))
+            if "<style>" in joined or "<script>" in joined:
+                for c in ast.walk(jn):
+                    if isinstance(c, ast.Constant):
+                        template_chunks.add((c.lineno, c.col_offset))
+
         for node in ast.walk(tree):
             if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
                 continue
             if (node.lineno, node.col_offset) in exempt:
+                n_exempt += 1
+                continue
+            if (node.lineno, node.col_offset) in template_chunks:
                 n_exempt += 1
                 continue
             # 行内标记：给"测试里构造的源码样本"用（那种字符串本来就是样本）。
