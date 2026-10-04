@@ -100,6 +100,35 @@ main{flex:1;display:flex;flex-direction:column;min-width:0}
 #tabs button:hover{color:var(--fg2)}
 #tabs button.on{color:var(--fg);border-bottom-color:var(--mid);font-weight:600}
 /* 全局页的标签：用一个点提示"它不依赖当前作业" */
+/* ===== 交易终端（S3~S6）=====
+   ⭐ 图表是**手写 canvas**，不引任何第三方库 —— 本项目零构建、零外部依赖，
+   打包后离线可用。红涨绿跌（A 股习惯，与 TradingView 相反）。 */
+#tab-terminal .tbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+#tab-terminal .tgrid{display:grid;grid-template-columns:1fr 232px;gap:10px;align-items:start}
+@media (max-width:1100px){#tab-terminal .tgrid{grid-template-columns:1fr}}
+#tab-terminal .tpanel{background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:8px}
+#tab-terminal .tchart{width:100%;display:block;cursor:crosshair}
+#tab-terminal .tread{font:12px/1.6 ui-monospace,monospace;color:var(--fg);
+  min-height:20px;white-space:nowrap;overflow:hidden}
+#tab-terminal .dom{font:12px/1.5 ui-monospace,monospace;width:100%;border-collapse:collapse}
+#tab-terminal .dom td{padding:1px 4px;cursor:pointer}
+#tab-terminal .dom tr:hover td{background:rgba(255,255,255,.06)}
+#tab-terminal .dom .pz{text-align:right;color:var(--muted)}
+#tab-terminal .dom .bar{position:relative}
+#tab-terminal .dom .bar i{position:absolute;top:1px;bottom:1px;right:0;
+  background:rgba(120,150,255,.18);border-radius:2px}
+#tab-terminal .dom .mid td{border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  text-align:center;color:var(--muted);cursor:default}
+#tab-terminal .up{color:#e8735a}#tab-terminal .dn{color:#4ec9a0}
+#tab-terminal .acct{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0}
+@media (max-width:900px){#tab-terminal .acct{grid-template-columns:repeat(2,1fr)}}
+#tab-terminal .acct div{background:rgba(255,255,255,.04);border-radius:6px;padding:6px 8px}
+#tab-terminal .acct b{display:block;font-size:16px}
+#tab-terminal .acct span{color:var(--muted);font-size:11px}
+#tab-terminal table.mini2{width:100%;font:12px/1.5 ui-monospace,monospace}
+#tab-terminal .tpos{color:var(--muted);font-size:12px;margin-top:6px}
+
 #tabs button[data-tab="docverify"]::before,
 #tabs button[data-tab="agent"]::before{
   content:"●";font-size:7px;vertical-align:middle;margin-right:5px;color:var(--purple);
@@ -337,6 +366,9 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
       <!-- 分组二：**全局页面**（与当前作业无关，随时可看） -->
       <div class="grp" role="presentation">
         <span class="grplabel" aria-hidden="true">全局</span>
+        <button role="tab" data-tab="terminal" aria-selected="false"
+                aria-controls="tab-terminal"
+                title="在自己模拟出来的市场里逐根回放、看着盘口下单（与当前作业无关）">交易终端</button>
         <button role="tab" data-tab="agent" aria-selected="false"
                 aria-controls="tab-agent"
                 title="读磁盘上的决策留痕，与当前作业无关">Agent 决策</button>
@@ -353,6 +385,7 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
       <div class="tabpane" id="tab-compare" role="tabpanel" aria-label="对照"></div>
       <div class="tabpane" id="tab-real" role="tabpanel" aria-label="真实比对"></div>
       <div class="tabpane" id="tab-agent" role="tabpanel" aria-label="Agent 决策"></div>
+      <div class="tabpane" id="tab-terminal" role="tabpanel" aria-label="交易终端"></div>
       <div class="tabpane" id="tab-docverify" role="tabpanel" aria-label="文档验证"></div>
     </div>
   </main>
@@ -942,6 +975,7 @@ const RENDERERS = {
   compare: () => renderCompare(),
   real: () => renderReal(),
   agent: () => renderAgent(),
+  terminal: () => renderTerminal(),
   docverify: () => renderDocVerify(),
 };
 //: 启动时全部置脏（首绘必须画一次）
@@ -1961,6 +1995,410 @@ window.addEventListener("resize", () => {
   await maybeAutorun();
   if (State.wantTab) switchTab(State.wantTab);
 })();
+
+/* =====================================================================
+   交易终端（S3~S6）：逐根回放 + 盘口深度 + 纸上交易
+
+   ⭐ 图表是**手写 canvas**（不引第三方库）：本项目零构建、零外部依赖，
+   打包后离线可用。红涨绿跌（A 股习惯，与 TradingView 相反）。
+
+   ⚠️ **切标签页不能重建视图状态**（缩放/平移/光标都在 `T` 里）：
+   重建会让"看一眼再切走"变成"视图被重置" —— 那是分页式界面最招人烦的毛病。
+   所以 `renderTerminal` 只在第一次铺 DOM，之后只重画。
+   ===================================================================== */
+const T = {
+  st: null,          // 后端 state（bars/book/account/cursor）
+  vis: 160,          // 可见 K 线根数（滚轮缩放）
+  off: 0,            // 视图右移的根数（拖拽平移）
+  hover: null,       // 十字光标所在下标
+  timer: null,       // 播放定时器
+  speed: 4, agg: 4,   // ⭐ 默认 4 根：每根 1 tick 时开=高=低=收，K 线实体细到几乎看不见
+  qty: 1, px: "", side: "buy",
+  err: "", busy: false, built: false,
+};
+const T_BARS = () => (T.st && T.st.bars) || [];
+
+/** 统一的后端调用：GET 直接拿 state，POST 从 .state 里取。 */
+async function tApi(path, body) {
+  if (T.busy) return null;          // 防连点导致请求乱序、状态倒退
+  T.busy = true;
+  try {
+    const r = await api(path, body ? { method: "POST", body } : undefined);
+    // ⚠️ **两种返回形态都要认**：POST 回的是 `{..., state:{…}}`，
+    //    而 `GET /state` 回的就是 state 本身（没有外层）。
+    //    只认 `r.state` ⇒ GET 之后 T.st 永远是 null ⇒ 图上永远是
+    //    「还没有数据」，而接口明明有数据（第一版就踩了，眼看为空图）。
+    if (r && r.state) T.st = r.state;
+    else if (r && r.bars) T.st = r;
+    T.err = "";
+    return r;
+  } catch (e) {
+    T.err = String((e && e.message) || e);
+    return null;
+  } finally {
+    T.busy = false;
+    tPaint();
+  }
+}
+
+/* ---------------------------------------------------------- 视图与坐标 */
+function tView() {
+  const b = T_BARS(), n = b.length;
+  const vis = Math.max(20, Math.min(T.vis, Math.max(n, 1)));
+  const end = Math.max(vis, n - T.off);
+  const start = Math.max(0, end - vis);
+  return { b, n, start, end, vis };
+}
+function tGeom(cv, h) {
+  const W = cv.clientWidth || 760;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(h * dpr);
+  cv.style.height = h + "px";
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, h);
+  return { g, W, H: h };
+}
+function tNoData(g, W, H, msg) {
+  g.fillStyle = css("--muted");
+  g.font = "13px sans-serif";
+  g.textAlign = "center";
+  g.fillText(msg, W / 2, H / 2);
+}
+
+/* ---------------------------------------------------------- 主图：K 线 */
+function tDrawPrice() {
+  const cv = document.getElementById("t-price");
+  if (!cv) return;
+  const { g, W, H } = tGeom(cv, 296);
+  const { b, start, end } = tView();
+  const pad = { l: 6, r: 70, t: 8, b: 16 };
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  if (!b.length || end <= start) { tNoData(g, W, H, "还没有数据 —— 点「单根」或「播放」"); return; }
+
+  let lo = Infinity, hi = -Infinity;
+  for (let i = start; i < end; i++) { if (b[i].l < lo) lo = b[i].l; if (b[i].h > hi) hi = b[i].h; }
+  const mgn = (hi - lo) * 0.08 || Math.max(1, hi * 0.0002);
+  lo -= mgn; hi += mgn;
+  const X = (i) => pad.l + (i - start + 0.5) * (pw / (end - start));
+  const Y = (p) => pad.t + ph * (1 - (p - lo) / (hi - lo));
+
+  // 网格 + 价格轴（复用全局的 niceTicks / tickLabel）
+  const ticks = niceTicks(lo, hi, 6);
+  const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : 1;
+  g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  g.fillStyle = css("--muted"); g.font = "11px ui-monospace,monospace";
+  g.textAlign = "left"; g.textBaseline = "middle";
+  for (const v of ticks) {
+    const y = Math.round(Y(v)) + 0.5;
+    if (y < pad.t || y > pad.t + ph) continue;
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
+    g.fillText(tickLabel(v, step), pad.l + pw + 5, y);
+  }
+
+  // K 线：影线 + 实体（红涨绿跌）
+  const slot = pw / (end - start);
+  const cw = Math.max(1, Math.min(14, slot * 0.66));
+  for (let i = start; i < end; i++) {
+    const d = b[i], up = d.c >= d.o;
+    g.strokeStyle = g.fillStyle = up ? "#e8735a" : "#4ec9a0";
+    g.beginPath(); g.moveTo(X(i), Y(d.h)); g.lineTo(X(i), Y(d.l)); g.stroke();
+    const y1 = Y(Math.max(d.o, d.c)), y2 = Y(Math.min(d.o, d.c));
+    g.fillRect(X(i) - cw / 2, y1, cw, Math.max(1, y2 - y1));
+  }
+
+  // 最新价横线 + 标签（TradingView 的习惯）
+  const last = b[b.length - 1];
+  if (last) {
+    const y = Y(last.c);
+    if (y > pad.t && y < pad.t + ph) {
+      g.strokeStyle = "#5aa9e6"; g.setLineDash([3, 3]);
+      g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = "#5aa9e6"; g.fillRect(pad.l + pw + 1, y - 8, 66, 16);
+      g.fillStyle = "#0d1017"; g.textAlign = "center";
+      g.fillText(tickLabel(last.c, step), pad.l + pw + 34, y);
+      g.textAlign = "left";
+    }
+  }
+
+  // 十字光标
+  if (T.hover != null && T.hover >= start && T.hover < end) {
+    const x = X(T.hover), d = b[T.hover];
+    g.strokeStyle = css("--fg2"); g.setLineDash([2, 3]);
+    g.beginPath(); g.moveTo(x, pad.t); g.lineTo(x, pad.t + ph); g.stroke();
+    const y = Y(d.c);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = "#5aa9e6"; g.fillRect(pad.l + pw + 1, y - 8, 66, 16);
+    g.fillStyle = "#0d1017"; g.textAlign = "center";
+    g.fillText(tickLabel(d.c, step), pad.l + pw + 34, y);
+  }
+  tAxis(g, W, H, b, start, end, slot, pad, pw);
+}
+
+/* ---------------------------------------------------------- 副图：成交量 */
+function tDrawVol() {
+  const cv = document.getElementById("t-vol");
+  if (!cv) return;
+  const { g, W, H } = tGeom(cv, 86);
+  const { b, start, end } = tView();
+  const pad = { l: 6, r: 70, t: 6, b: 12 };
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  if (!b.length || end <= start) { tNoData(g, W, H, ""); return; }
+  let vmax = 0;
+  for (let i = start; i < end; i++) vmax = Math.max(vmax, b[i].v);
+  vmax = vmax || 1;
+  const slot = pw / (end - start);
+  const cw = Math.max(1, Math.min(14, slot * 0.66));
+  for (let i = start; i < end; i++) {
+    const d = b[i], up = d.c >= d.o, hgt = ph * (d.v / vmax);
+    g.fillStyle = up ? "rgba(232,115,90,.75)" : "rgba(78,201,160,.75)";
+    g.fillRect(pad.l + (i - start) * slot + (slot - cw) / 2, pad.t + ph - hgt, cw, Math.max(1, hgt));
+  }
+  g.strokeStyle = css("--grid");
+  g.beginPath(); g.moveTo(pad.l, pad.t + ph + 0.5); g.lineTo(pad.l + pw, pad.t + ph + 0.5); g.stroke();
+  g.fillStyle = css("--muted"); g.font = "10px ui-monospace,monospace";
+  g.textAlign = "left";
+  g.fillText("量 " + vmax.toFixed(1), pad.l + pw + 5, pad.t + 8);
+}
+
+/* ---------------------------------------------------------- 时间轴 */
+function tAxis(g, W, H, b, start, end, slot, pad, pw) {
+  g.fillStyle = css("--muted"); g.font = "10px ui-monospace,monospace";
+  g.textAlign = "center"; g.textBaseline = "top";
+  const every = Math.max(1, Math.round((end - start) / 8));
+  for (let i = start; i < end; i += every) {
+    const x = pad.l + (i - start + 0.5) * slot;
+    if (x > pad.l + pw - 12) break;
+    g.fillText("t" + b[i].t, x, H - 12);
+  }
+  g.textBaseline = "alphabetic";
+}
+
+/* ---------------------------------------------------------- 读数条 */
+function tReadout() {
+  const box = document.getElementById("t-read");
+  if (!box) return;
+  const b = T_BARS();
+  const i = T.hover != null && T.hover >= 0 && T.hover < b.length ? T.hover : b.length - 1;
+  if (i < 0) { box.textContent = ""; return; }
+  const d = b[i];
+  const up = d.c >= d.o;
+  const cls = up ? "up" : "dn";
+  box.innerHTML =
+    `<span class="${cls}">开 ${d.o.toFixed(1)}　高 ${d.h.toFixed(1)}　低 ${d.l.toFixed(1)}　` +
+    `收 ${d.c.toFixed(1)}</span>　量 ${d.v.toFixed(2)}　笔 ${d.n.toFixed(0)}　` +
+    `买盘 ${d.d.toFixed(1)}　<span style="color:var(--muted)">tick ${d.t}` +
+    (T.hover != null ? "（光标）" : "（最新）") + "</span>";
+}
+
+/* ---------------------------------------------------------- 盘口阶梯 */
+function tDom() {
+  const box = document.getElementById("t-dom");
+  if (!box || !T.st) return;
+  const bk = T.st.book || { bids: [], asks: [] };
+  const rows = [];
+  const qmax = Math.max(1, ...bk.asks.map((x) => x.q), ...bk.bids.map((x) => x.q));
+  const row = (lv, side) => {
+    const w = (100 * lv.q / qmax).toFixed(1);
+    const cls = side === "ask" ? "dn" : "up";
+    rows.push(`<tr data-px="${lv.p}"><td class="pz ${cls}">${lv.p.toFixed(1)}</td>` +
+      `<td class="bar ${cls}"><i style="width:${w}%"></i>${lv.q.toFixed(2)}</td>` +
+      `<td style="color:var(--muted)">${lv.n}</td></tr>`);
+  };
+  for (let i = bk.asks.length - 1; i >= 0; i--) row(bk.asks[i], "ask");
+  const spr = (bk.asks[0] && bk.bids[0]) ? bk.asks[0].p - bk.bids[0].p : 0;
+  rows.push(`<tr class="mid"><td colspan="3">价差 ${spr.toFixed(2)}　mid ` +
+    `${(bk.mid || 0).toFixed(1)}</td></tr>`);
+  for (const lv of bk.bids) row(lv, "bid");
+  box.innerHTML = `<table class="dom"><tbody>${rows.join("")}</tbody></table>`;
+  // 点档位 = 填价格（TradingView 的订单阶梯就是这样用的）
+  box.querySelectorAll("tr[data-px]").forEach((tr) => {
+    tr.onclick = () => {
+      T.px = tr.getAttribute("data-px");
+      const inp = document.getElementById("t-px");
+      if (inp) inp.value = Number(T.px).toFixed(1);
+      tPaint();
+    };
+  });
+}
+
+/* ---------------------------------------------------------- 账户区 */
+function tAcct() {
+  const box = document.getElementById("t-acct");
+  if (!box || !T.st) return;
+  const a = T.st.account || {};
+  const pnl = a.pnl == null ? 0 : a.pnl;
+  const card = (label, val, cls) =>
+    `<div><span>${label}</span><b class="${cls || ""}">${val}</b></div>`;
+  box.innerHTML =
+    card("现金", (a.cash || 0).toFixed(0)) +
+    card("权益", a.equity == null ? "—" : a.equity.toFixed(0)) +
+    card("持仓", (a.inventory || 0).toFixed(4)) +
+    card("盈亏", (pnl >= 0 ? "+" : "") + pnl.toFixed(0), pnl >= 0 ? "up" : "dn");
+
+  const ob = document.getElementById("t-orders");
+  if (ob) {
+    const os = a.orders || [];
+    ob.innerHTML = os.length
+      ? "<table class='mini2'><tr><th>挂单</th><th>方向</th><th>价</th><th>量</th><th></th></tr>" +
+        os.map((o) => `<tr><td>${o.id}</td><td class="${o.side === "buy" ? "up" : "dn"}">` +
+          `${o.side === "buy" ? "买" : "卖"}</td><td>${o.price == null ? "市价" : o.price.toFixed(1)}</td>` +
+          `<td>${o.qty.toFixed(3)}</td><td><a href="#" data-cancel="${o.id}">撤</a></td></tr>`).join("") +
+        "</table>"
+      : "<div class='tpos'>没有挂单</div>";
+    ob.querySelectorAll("a[data-cancel]").forEach((a2) => {
+      a2.onclick = (ev) => { ev.preventDefault(); tApi("/api/terminal/cancel", { order_id: a2.getAttribute("data-cancel") }); };
+    });
+  }
+  const tb = document.getElementById("t-trades");
+  if (tb) {
+    const ts = a.trades || [];
+    tb.innerHTML = ts.length
+      ? "<table class='mini2'><tr><th>成交</th><th>方向</th><th>价</th><th>量</th></tr>" +
+        ts.slice().reverse().map((t) => `<tr><td>t${t.tick}</td>` +
+          `<td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "买" : "卖"}</td>` +
+          `<td>${t.price.toFixed(1)}</td><td>${t.qty.toFixed(3)}</td></tr>`).join("") +
+        "</table>"
+      : "<div class='tpos'>还没有成交</div>";
+  }
+}
+
+/* ---------------------------------------------------------- 重画全部 */
+function tPaint() {
+  tDrawPrice();
+  tDrawVol();
+  tReadout();
+  tDom();
+  tAcct();
+  const bar = document.getElementById("t-bar");
+  if (bar && T.st) {
+    const c = T.st.cursor, tot = T.st.cfg ? T.st.cfg.n_ticks : 0;
+    const sl = document.getElementById("t-seek");
+    if (sl && tot) { sl.max = String(tot); sl.value = String(c); }
+    const lb = document.getElementById("t-prog");
+    if (lb) lb.textContent = c + " / " + tot + (T.st.at_end ? "（已到末尾）" : "");
+  }
+  const e = document.getElementById("t-err");
+  if (e) e.textContent = T.err;
+}
+
+/* ---------------------------------------------------------- 播放控制 */
+function tPlay() {
+  if (T.timer) { tStop(); return; }
+  T.timer = setInterval(() => {
+    if (T.busy) return;
+    if (T.st && T.st.at_end) { tStop(); return; }
+    tApi("/api/terminal/step", { n: T.speed, agg: T.agg });
+  }, 650);
+  tPaint();
+}
+function tStop() {
+  if (T.timer) { clearInterval(T.timer); T.timer = null; }
+  const b = document.getElementById("t-play");
+  if (b) b.textContent = "▶ 播放";
+  tPaint();
+}
+
+/* ---------------------------------------------------------- 交互绑定 */
+function tBind() {
+  const cv = document.getElementById("t-price");
+  if (!cv) return;
+  const idxAt = (ev) => {
+    const { start, end } = tView();
+    const r = cv.getBoundingClientRect();
+    const pad = 6, pw = r.width - pad - 70;
+    const i = start + Math.floor(((ev.clientX - r.left - pad) / pw) * (end - start));
+    return (i >= start && i < end) ? i : null;
+  };
+  cv.onmousemove = (ev) => {
+    if (cv._drag) {
+      const dx = ev.clientX - cv._dragX;
+      const { vis, end } = tView();
+      const slot = (cv.clientWidth - 76) / vis;
+      T.off = Math.max(0, Math.min(T_BARS().length - vis, T._off0 - Math.round(dx / slot)));
+      tPaint();
+      return;
+    }
+    T.hover = idxAt(ev);
+    tPaint();
+  };
+  cv.onmouseleave = () => { T.hover = null; tPaint(); };
+  cv.onmousedown = (ev) => { cv._drag = true; cv._dragX = ev.clientX; T._off0 = T.off; };
+  window.addEventListener("mouseup", () => { if (cv) cv._drag = false; });
+  cv.onwheel = (ev) => {
+    ev.preventDefault();
+    T.vis = Math.max(20, Math.min(2000, Math.round(T.vis * (ev.deltaY > 0 ? 1.15 : 0.87))));
+    tPaint();
+  };
+  cv.ondblclick = () => { T.vis = 160; T.off = 0; tPaint(); };
+}
+
+/* ---------------------------------------------------------- 铺 DOM */
+function renderTerminal() {
+  const box = $("#tab-terminal");
+  if (!box) return;
+  if (!T.built) {
+    T.built = true;
+    box.innerHTML = `
+      <div class="tbar" id="t-bar">
+        <button class="btn sm" id="t-play" onclick="tPlay()">▶ 播放</button>
+        <button class="btn sm" onclick="tStop()">⏸</button>
+        <button class="btn sm" id="t-step" onclick="tApi('/api/terminal/step',{n:1,agg:T.agg})">⏭ 单根</button>
+        <label class="tpos">速度
+          <select id="t-speed" onchange="T.speed=Number(this.value)">
+            <option value="1">1×</option><option value="4" selected>4×</option>
+            <option value="16">16×</option><option value="64">64×</option>
+          </select></label>
+        <label class="tpos">周期
+          <select id="t-agg" onchange="T.agg=Number(this.value);tApi('/api/terminal/step',{n:0,agg:T.agg})">
+            <option value="1">1 根</option><option value="4" selected>4 根</option>
+            <option value="16">16 根</option><option value="64">64 根</option>
+          </select></label>
+        <input type="range" id="t-seek" min="0" max="100" style="width:150px"
+               oninput="if(!T.busy)tApi('/api/terminal/step',{n:Number(this.value)-(T.st?T.st.cursor:0),agg:T.agg})">
+        <span class="tpos" id="t-prog">—</span>
+        <button class="btn sm" onclick="tApi('/api/terminal/reset',{})">重开</button>
+        <span class="tpos">滚轮缩放 · 拖拽平移 · 双击复位</span>
+        <span class="tpos" id="t-err" style="color:var(--warn)"></span>
+      </div>
+      <div class="tgrid">
+        <div>
+          <div class="tpanel"><canvas class="tchart" id="t-price"></canvas></div>
+          <div class="tpanel" style="margin-top:8px"><canvas class="tchart" id="t-vol"></canvas></div>
+          <div class="tread" id="t-read"></div>
+          <div class="tpanel" style="margin-top:8px">
+            <div class="tbar" style="margin:0 0 6px">
+              <span class="tpos">纸上交易（真实撮合）</span>
+              <label class="tpos">价 <input id="t-px" type="number" step="0.1" style="width:96px"
+                 oninput="T.px=this.value"></label>
+              <label class="tpos">量 <input id="t-qty" type="number" step="0.1" value="1"
+                 style="width:80px" oninput="T.qty=Number(this.value)"></label>
+              <button class="btn sm" id="t-buy" style="color:#e8735a"
+                 onclick="tApi('/api/terminal/order',{side:'buy',qty:T.qty,price:T.px,type:'limit'})">买入</button>
+              <button class="btn sm" id="t-sell" style="color:#4ec9a0"
+                 onclick="tApi('/api/terminal/order',{side:'sell',qty:T.qty,price:T.px,type:'limit'})">卖出</button>
+            </div>
+            <div class="acct" id="t-acct"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div><div class="tpos">挂单</div><div id="t-orders"></div></div>
+              <div><div class="tpos">成交明细</div><div id="t-trades"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="tpanel">
+          <div class="tpos" style="margin-bottom:4px">盘口深度（点档位填价）</div>
+          <div id="t-dom"></div>
+        </div>
+      </div>`;
+    tBind();
+    tApi("/api/terminal/state");      // 第一次取数
+  } else {
+    tPaint();                          // ⭐ 切回来只重画，视图状态（缩放/平移）保住
+  }
+}
 </script>
 </body>
 </html>

@@ -16,7 +16,7 @@
 
 #define AppName "交易世界"
 #define AppNameEn "TradingWorld"
-#define AppVersion "1.1.0"
+#define AppVersion "1.2.0"
 #define AppPublisher "ericwuname"
 #define AppURL "https://github.com/ericwuname/trading-world"
 

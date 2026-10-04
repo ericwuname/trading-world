@@ -265,6 +265,8 @@ class TerminalSession:
                     }
                     for o in a.open_orders
                 ],
+                # 成交明细直接带在这里（前端一次拿全量，不用再发一次请求）
+                "trades": self.my_trades(20),
             }
 
     def state(self, agg: int = 1) -> dict:
