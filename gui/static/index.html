@@ -2008,7 +2008,10 @@ window.addEventListener("resize", () => {
    ===================================================================== */
 const T = {
   st: null,          // 后端 state（bars/book/account/cursor）
-  vis: 160,          // 可见 K 线根数（滚轮缩放）
+  // ⭐ 默认只显示 70 根：160 根时 y 轴要覆盖 300+ tick 的随机游走
+  //（区间可达 5%），每根 K 线实体只剩 2px —— **看起来像散落的点**。
+  // 少显示一点 ⇒ 区间更窄、实体更粗。这是"看得清"的唯一办法。
+  vis: 70,           // 可见 K 线根数（滚轮缩放）
   off: 0,            // 视图右移的根数（拖拽平移）
   hover: null,       // 十字光标所在下标
   timer: null,       // 播放定时器
@@ -2049,6 +2052,41 @@ function tView() {
   const start = Math.max(0, end - vis);
   return { b, n, start, end, vis };
 }
+/* ---------------------------------------------------------- 坐标与价格格式 */
+function tPriceLabel(v, step) {
+  /* ⚠️ **不能**用全局的 tickLabel：它会自动换算成 k/M
+     （59,667 → "59k"），那是给"百万级数量"设计的。
+     加密货币价格在 6 万量级，压缩成 k 就**把精度丢了** ——
+     盘口和图表的价位差 1 块钱都看不出来。
+     ⭐ 本行的教训（同一类错误我连踩三次）：
+       ① 块注释的结尾我写成了 Python docstring 的三个双引号；
+       ② 修的时候又把「块注释的结束符」本身写进了注释正文里 ⇒ 提前闭合；
+       ③ 写检查脚本时在 docstring 里抄了那三个双引号 ⇒ 自己的 docstring 提前闭合。
+     教训：**描述某个错误写法时，不要把那个写法原样抄进来。** */
+  const a = Math.abs(v);
+  const d = step < 0.01 ? 4 : step < 0.1 ? 3 : step < 1 ? 2 : step < 10 ? 1 : 0;
+  return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+function tQtyLabel(v) {
+  const a = Math.abs(v);
+  if (a >= 1000) return (v / 1000).toFixed(1) + "k";
+  if (a >= 100) return v.toFixed(0);
+  if (a >= 10) return v.toFixed(1);
+  return v.toFixed(2);
+}
+
+/** n 周期简单均线；不足 n 根的位置为 null（不画）。 */
+function tMA(b, n) {
+  const out = new Array(b.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < b.length; i++) {
+    sum += b[i].c;
+    if (i >= n) sum -= b[i - n].c;
+    if (i >= n - 1) out[i] = sum / n;
+  }
+  return out;
+}
+
 function tGeom(cv, h) {
   const W = cv.clientWidth || 760;
   const dpr = window.devicePixelRatio || 1;
@@ -2071,7 +2109,7 @@ function tNoData(g, W, H, msg) {
 function tDrawPrice() {
   const cv = document.getElementById("t-price");
   if (!cv) return;
-  const { g, W, H } = tGeom(cv, 296);
+  const { g, W, H } = tGeom(cv, 340);
   const { b, start, end } = tView();
   const pad = { l: 6, r: 70, t: 8, b: 16 };
   const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
@@ -2094,7 +2132,7 @@ function tDrawPrice() {
     const y = Math.round(Y(v)) + 0.5;
     if (y < pad.t || y > pad.t + ph) continue;
     g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
-    g.fillText(tickLabel(v, step), pad.l + pw + 5, y);
+    g.fillText(tPriceLabel(v, step), pad.l + pw + 5, y);
   }
 
   // K 线：影线 + 实体（红涨绿跌）
@@ -2118,10 +2156,32 @@ function tDrawPrice() {
       g.setLineDash([]);
       g.fillStyle = "#5aa9e6"; g.fillRect(pad.l + pw + 1, y - 8, 66, 16);
       g.fillStyle = "#0d1017"; g.textAlign = "center";
-      g.fillText(tickLabel(last.c, step), pad.l + pw + 34, y);
+      g.fillText(tPriceLabel(last.c, step), pad.l + pw + 34, y);
       g.textAlign = "left";
     }
   }
+
+  // 均线：MA7（快）/ MA25（慢）—— 看盘第一眼该有的"有没有趋势"
+  // ⚠️ 画在 K 线**之上**且半透明，否则会盖住实体
+  const ma7 = tMA(b, 7), ma25 = tMA(b, 25);
+  const line = (arr, color) => {
+    g.strokeStyle = color; g.lineWidth = 1.3; g.globalAlpha = 0.9;
+    g.beginPath();
+    let started = false;
+    for (let i = start; i < end; i++) {
+      if (arr[i] == null) { started = false; continue; }
+      const x = X(i), y = Y(arr[i]);
+      if (!started) { g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    }
+    g.stroke();
+    g.globalAlpha = 1;
+  };
+  line(ma25, "#b48ead");
+  line(ma7, "#e0a458");
+  // ⚠️ 这里必须是大写的 T（全局状态对象）。写成小写 t 是**未声明变量**，
+  //    严格模式下直接抛 ReferenceError —— 而且它发生在 K 线画完之后，
+  //    症状是"图有、读数条/盘口/账户全空"，根本看不出是这里挂了。
+  T.mas = { ma7: ma7, ma25: ma25 };
 
   // 十字光标
   if (T.hover != null && T.hover >= start && T.hover < end) {
@@ -2133,7 +2193,7 @@ function tDrawPrice() {
     g.setLineDash([]);
     g.fillStyle = "#5aa9e6"; g.fillRect(pad.l + pw + 1, y - 8, 66, 16);
     g.fillStyle = "#0d1017"; g.textAlign = "center";
-    g.fillText(tickLabel(d.c, step), pad.l + pw + 34, y);
+    g.fillText(tPriceLabel(d.c, step), pad.l + pw + 34, y);
   }
   tAxis(g, W, H, b, start, end, slot, pad, pw);
 }
@@ -2142,7 +2202,7 @@ function tDrawPrice() {
 function tDrawVol() {
   const cv = document.getElementById("t-vol");
   if (!cv) return;
-  const { g, W, H } = tGeom(cv, 86);
+  const { g, W, H } = tGeom(cv, 96);
   const { b, start, end } = tView();
   const pad = { l: 6, r: 70, t: 6, b: 12 };
   const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
@@ -2187,10 +2247,15 @@ function tReadout() {
   const d = b[i];
   const up = d.c >= d.o;
   const cls = up ? "up" : "dn";
+  const mas = T.mas || {};
+  const f = (x) => (x == null ? "—" : x.toFixed(1));
   box.innerHTML =
     `<span class="${cls}">开 ${d.o.toFixed(1)}　高 ${d.h.toFixed(1)}　低 ${d.l.toFixed(1)}　` +
     `收 ${d.c.toFixed(1)}</span>　量 ${d.v.toFixed(2)}　笔 ${d.n.toFixed(0)}　` +
-    `买盘 ${d.d.toFixed(1)}　<span style="color:var(--muted)">tick ${d.t}` +
+    `买盘 ${d.d.toFixed(1)}　` +
+    `<span style="color:#e0a458">MA7 ${f(mas.ma7 && mas.ma7[i])}</span>　` +
+    `<span style="color:#b48ead">MA25 ${f(mas.ma25 && mas.ma25[i])}</span>　` +
+    `<span style="color:var(--muted)">tick ${d.t}` +
     (T.hover != null ? "（光标）" : "（最新）") + "</span>";
 }
 
@@ -2204,14 +2269,14 @@ function tDom() {
   const row = (lv, side) => {
     const w = (100 * lv.q / qmax).toFixed(1);
     const cls = side === "ask" ? "dn" : "up";
-    rows.push(`<tr data-px="${lv.p}"><td class="pz ${cls}">${lv.p.toFixed(1)}</td>` +
-      `<td class="bar ${cls}"><i style="width:${w}%"></i>${lv.q.toFixed(2)}</td>` +
+    rows.push(`<tr data-px="${lv.p}"><td class="pz ${cls}">${tPriceLabel(lv.p, 0.1)}</td>` +
+      `<td class="bar ${cls}"><i style="width:${w}%"></i>${tQtyLabel(lv.q)}</td>` +
       `<td style="color:var(--muted)">${lv.n}</td></tr>`);
   };
   for (let i = bk.asks.length - 1; i >= 0; i--) row(bk.asks[i], "ask");
   const spr = (bk.asks[0] && bk.bids[0]) ? bk.asks[0].p - bk.bids[0].p : 0;
   rows.push(`<tr class="mid"><td colspan="3">价差 ${spr.toFixed(2)}　mid ` +
-    `${(bk.mid || 0).toFixed(1)}</td></tr>`);
+    `${tPriceLabel(bk.mid || 0, 0.1)}</td></tr>`);
   for (const lv of bk.bids) row(lv, "bid");
   box.innerHTML = `<table class="dom"><tbody>${rows.join("")}</tbody></table>`;
   // 点档位 = 填价格（TradingView 的订单阶梯就是这样用的）
@@ -2223,6 +2288,20 @@ function tDom() {
       tPaint();
     };
   });
+}
+
+/* ---------------------------------------------------------- 快捷仓位 */
+/** 按"可用现金的 frac"算下单量（真实交易台都有 1/4、1/2、全仓）。 */
+function tSetQty(frac) {
+  const a = (T.st && T.st.account) || {};
+  const px = parseFloat(T.px) || (T.st && T.st.book && T.st.book.mid) || 0;
+  const avail = (a.cash || 0) - (a.reserved_cash || 0);
+  if (!px || avail <= 0) { T.err = "先选个价格（或点盘口档位）再按仓位"; tPaint(); return; }
+  const q = Math.max(0, (avail * frac) / px);
+  T.qty = Math.round(q * 1000) / 1000;
+  const inp = document.getElementById("t-qty");
+  if (inp) inp.value = T.qty;
+  tPaint();
 }
 
 /* ---------------------------------------------------------- 账户区 */
@@ -2268,21 +2347,32 @@ function tAcct() {
 
 /* ---------------------------------------------------------- 重画全部 */
 function tPaint() {
-  tDrawPrice();
-  tDrawVol();
-  tReadout();
-  tDom();
-  tAcct();
-  const bar = document.getElementById("t-bar");
-  if (bar && T.st) {
-    const c = T.st.cursor, tot = T.st.cfg ? T.st.cfg.n_ticks : 0;
-    const sl = document.getElementById("t-seek");
-    if (sl && tot) { sl.max = String(tot); sl.value = String(c); }
-    const lb = document.getElementById("t-prog");
-    if (lb) lb.textContent = c + " / " + tot + (T.st.at_end ? "（已到末尾）" : "");
+  /* ⚠️ 整段包 try/catch：**一半画不出来、另一半空白，比"整体报错"更难查**
+     （本轮就踩了：成交量那步抛异常 ⇒ 读数条/盘口/账户全没渲染，
+     截图只看到"空的盘口"，完全看不出是前面挂了）。
+     ⇒ 失败就把原因显示在工具条上，而不是留一片空白。 */
+  try {
+    tDrawPrice();
+    tDrawVol();
+    tReadout();
+    tDom();
+    tAcct();
+    const bar = document.getElementById("t-bar");
+    if (bar && T.st) {
+      const c = T.st.cursor, tot = T.st.cfg ? T.st.cfg.n_ticks : 0;
+      const sl = document.getElementById("t-seek");
+      if (sl && tot) { sl.max = String(tot); sl.value = String(c); }
+      const lb = document.getElementById("t-prog");
+      if (lb) lb.textContent = c + " / " + tot + (T.st.at_end ? "（已到末尾）" : "");
+    }
+  } catch (e) {
+    const box = document.getElementById("t-err");
+    if (box) box.textContent = "绘制出错：" + ((e && e.message) || e);
+    if (window.console) console.error("[terminal] paint failed", e);
+    return;                                  // ⭐ 别让异常冒到 fetch 回调里
   }
-  const e = document.getElementById("t-err");
-  if (e) e.textContent = T.err;
+  const e2 = document.getElementById("t-err");
+  if (e2 && T.err) e2.textContent = T.err;
 }
 
 /* ---------------------------------------------------------- 播放控制 */
@@ -2372,10 +2462,13 @@ function renderTerminal() {
           <div class="tpanel" style="margin-top:8px">
             <div class="tbar" style="margin:0 0 6px">
               <span class="tpos">纸上交易（真实撮合）</span>
-              <label class="tpos">价 <input id="t-px" type="number" step="0.1" style="width:96px"
+              <label class="tpos">价 <input id="t-px" type="number" step="0.1" style="width:104px"
                  oninput="T.px=this.value"></label>
               <label class="tpos">量 <input id="t-qty" type="number" step="0.1" value="1"
-                 style="width:80px" oninput="T.qty=Number(this.value)"></label>
+                 style="width:86px" oninput="T.qty=Number(this.value)"></label>
+              <button class="btn sm" onclick="tSetQty(0.25)" title="用 25% 现金按当前价买">1/4</button>
+              <button class="btn sm" onclick="tSetQty(0.5)" title="用 50% 现金按当前价买">1/2</button>
+              <button class="btn sm" onclick="tSetQty(0.97)" title="几乎全部现金">全仓</button>
               <button class="btn sm" id="t-buy" style="color:#e8735a"
                  onclick="tApi('/api/terminal/order',{side:'buy',qty:T.qty,price:T.px,type:'limit'})">买入</button>
               <button class="btn sm" id="t-sell" style="color:#4ec9a0"
