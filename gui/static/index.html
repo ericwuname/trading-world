@@ -2022,12 +2022,58 @@ const T = {
 };
 const T_BARS = () => (T.st && T.st.bars) || [];
 
+/* ⭐ 只读调试句柄 —— 给 `static/uitest.html`（交互验收）用。
+   为什么需要：`const T` **不会挂到 window 上**（只有 function 声明和 var 会），
+   而"能点按钮"这件事本身无法从页面外验证 ⇒ 验收页需要一个入口。
+   为什么是只读访问器而不是直接 `window.T = T`：
+   那样任何脚本都能改终端状态，而**验收用的东西不该有改写权**。 */
+window.__tw = {
+  get state() { return T.st; },
+  get busy() { return T.busy; },
+  get chartSig() { return TC ? TC.sig : ""; },
+  get visibleRange() {
+    if (!TC) return null;
+    const r = TC.chart.timeScale().getVisibleLogicalRange();
+    return r ? { from: r.from, to: r.to } : null;
+  },
+  get hasChart() { return !!TC; },
+  get agg() { return T.agg; },
+  get speed() { return T.speed; },
+};
+
 /** 统一的后端调用：GET 直接拿 state，POST 从 .state 里取。 */
-async function tApi(path, body) {
-  if (T.busy) return null;          // 防连点导致请求乱序、状态倒退
-  T.busy = true;
+/* ⚠️⚠️ 这里原来是一句 `if (T.busy) return null` —— **静默丢弃**。
+   实测后果（交互验收抓到的，不是想出来的）：播放期间每 650ms 就有一个请求在飞，
+   此时点「买入」/「单根」/拖进度条/切周期 **全部被丢掉，且毫无提示**
+   ⇒ 用户看到的就是「点了没反应」，而且**连报错都没有**。
+   ⭐ 这类"看起来是防抖、实际是吞操作"的代码，比不加更坏：
+   不加会乱序，加了会静默失效 —— 两者都让人以为程序坏了。
+
+   现在的做法：**串行队列 + 位置类请求合并**。
+     · 串行 ⇒ 任何时刻只有一个请求在飞 ⇒ 状态不会倒退、顺序有保证；
+     · 合并 ⇒ 同一 key 的待发请求只留**最新**那个。播放/拖动都是
+       "到哪里"语义，中间那几次到达同一位置的过程没有价值。
+*/
+const TQ = [];          // 待发队列
+let TQFlying = false;   // 当前是否有请求在飞
+
+function tApi(path, body, opts) {
+  const key = (opts && opts.coalesce) || null;
+  // 位置类（key 非空）只留最新 ⇒ 拖进度条时不必等前面那几十个请求
+  if (key) {
+    const same = TQ.find((j) => j.key === key);
+    if (same) { same.body = body; return Promise.resolve(null); }
+  }
+  return new Promise((resolve) => { TQ.push({ path, body, key, resolve }); pumpTq(); });
+}
+
+async function pumpTq() {
+  if (TQFlying || !TQ.length) return;
+  const job = TQ.shift();
+  TQFlying = true; T.busy = true;
+  tBusyUi(true);
   try {
-    const r = await api(path, body ? { method: "POST", body } : undefined);
+    const r = await api(job.path, job.body ? { method: "POST", body: job.body } : undefined);
     // ⚠️ **两种返回形态都要认**：POST 回的是 `{..., state:{…}}`，
     //    而 `GET /state` 回的就是 state 本身（没有外层）。
     //    只认 `r.state` ⇒ GET 之后 T.st 永远是 null ⇒ 图上永远是
@@ -2035,14 +2081,22 @@ async function tApi(path, body) {
     if (r && r.state) T.st = r.state;
     else if (r && r.bars) T.st = r;
     T.err = "";
-    return r;
+    job.resolve(r);
   } catch (e) {
     T.err = String((e && e.message) || e);
-    return null;
+    job.resolve(null);
   } finally {
-    T.busy = false;
+    TQFlying = false; T.busy = false;
+    tBusyUi(false);
     tPaint();
   }
+  if (TQ.length) pumpTq();
+}
+
+/** 忙的时候给一点视觉反馈：不是"卡了"，而是"正在处理上一个操作"。 */
+function tBusyUi(on) {
+  const d = document.getElementById("t-busy");
+  if (d) d.style.visibility = on ? "visible" : "hidden";
 }
 
 /* ---------------------------------------------------------- 视图与坐标 */
@@ -2431,7 +2485,7 @@ function tPlay() {
   T.timer = setInterval(() => {
     if (T.busy) return;
     if (T.st && T.st.at_end) { tStop(); return; }
-    tApi("/api/terminal/step", { n: T.speed, agg: T.agg });
+    tApi("/api/terminal/step", { n: T.speed, agg: T.agg }, { coalesce: "seek" });
   }, 650);
   tPaint();
 }
@@ -2480,15 +2534,16 @@ function renderTerminal() {
             <option value="16">16×</option><option value="64">64×</option>
           </select></label>
         <label class="tpos">周期
-          <select id="t-agg" onchange="T.agg=Number(this.value);tApi('/api/terminal/step',{n:0,agg:T.agg})">
+          <select id="t-agg" onchange="T.agg=Number(this.value);tApi('/api/terminal/step',{n:0,agg:T.agg})" >
             <option value="1">1 根</option><option value="4" selected>4 根</option>
             <option value="16">16 根</option><option value="64">64 根</option>
           </select></label>
         <input type="range" id="t-seek" min="0" max="100" style="width:150px"
-               oninput="if(!T.busy)tApi('/api/terminal/step',{n:Number(this.value)-(T.st?T.st.cursor:0),agg:T.agg})">
+               oninput="tApi('/api/terminal/step',{n:Number(this.value)-(T.st?T.st.cursor:0),agg:T.agg},{coalesce:'seek'})">
         <span class="tpos" id="t-prog">—</span>
         <button class="btn sm" onclick="tApi('/api/terminal/reset',{})">重开</button>
         <span class="tpos">滚轮缩放 · 拖拽平移 · 双击复位</span>
+        <span class="tpos" id="t-busy" style="visibility:hidden;color:var(--mid)">● 处理中…</span>
         <span class="tpos" id="t-err" style="color:var(--warn)"></span>
       </div>
       <div class="tgrid">

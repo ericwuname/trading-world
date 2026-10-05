@@ -125,10 +125,23 @@ class TerminalSession:
 
     # ---------------------------------------------------------------- 推进
     def step(self, n: int = 1) -> dict:
-        """往前走 n 根。返回最新状态摘要。"""
+        """往前走 n 根。返回最新状态摘要。
+
+        ⚠️ ``n <= 0`` 是**纯查询**（只回当前状态，不推进）。
+        为什么需要它：前端"切换周期/重新取数"是**不该动市场**的操作，
+        而旧实现把 0 夹成 1 ⇒ **切一下周期就白走一根 K 线**。
+        ⭐ 语义分家：``0 = 只查``、``>0 = 前进``、``seek() 负责往回找``（它只允许前进）。
+        """
         with self._lock:
             m = self._market
             assert m is not None
+            if int(n) <= 0:
+                return {
+                    "cursor": self._cursor,
+                    "total": self.cfg.n_ticks,
+                    "at_end": self._cursor >= self.cfg.n_ticks,
+                    "tick": int(m.tick),
+                }
             n = max(1, min(int(n), self.cfg.n_ticks - self._cursor))
             for _ in range(n):
                 if self._cursor >= self.cfg.n_ticks:

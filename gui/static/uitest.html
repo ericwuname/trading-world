@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>终端验收 · 运行中</title>
+<style>
+  body { background:#16181d; color:#d8dee9; font:13px/1.7 "Microsoft YaHei",sans-serif;
+         margin:0; padding:14px 18px; }
+  h1 { font-size:16px; margin:0 0 10px; }
+  #stage { position:fixed; left:-10000px; top:0; width:1400px; height:900px; }
+  table { border-collapse:collapse; font:12px/1.6 ui-monospace,monospace; }
+  td, th { border-bottom:1px solid #2c313a; padding:3px 8px; text-align:left; }
+  .ok { color:#4ec9a0; } .bad { color:#e8735a; } .wait { color:#e0a458; }
+  #summary { font-size:15px; margin:12px 0; }
+</style>
+</head>
+<body>
+<h1>交易终端 · 交互验收（点真按钮、断言可观察状态）</h1>
+<div id="summary" class="wait">运行中…</div>
+<table id="rows"><tr><th>#</th><th>检查</th><th>结果</th><th>细节</th></tr></table>
+<!-- 真实界面放在视口外：必须真的渲染（布局/DPR/canvas 才有意义），
+     但不该挡住结果表。 -->
+<div id="stage"><iframe id="app" style="width:1400px;height:880px;border:0"></iframe></div>
+
+<script>
+"use strict";
+/* ⭐ 这是**验收 harness**，不是产品界面的一部分。
+   为什么需要它：本项目原来的验证全是"截图 + 看字节数"，
+   那种验证方式**会被静态结构骗过**（界面看着正常、其实脚本全死）。
+   ⇒ 这里在**真实浏览器里点真按钮**，并断言**可观察的状态变化**。
+   打开方式：<server>/static/uitest.html?token=…（token 会被转给 iframe 里的应用）
+*/
+const R = [];
+const say = (name, ok, detail) => {
+  R.push({ name, ok: !!ok, detail: String(detail == null ? "" : detail) });
+  paint();
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const $ = (s) => document.querySelector(s);
+
+function paint() {
+  $("#rows").innerHTML = "<tr><th>#</th><th>检查</th><th>结果</th><th>细节</th></tr>" +
+    R.map((r, i) => `<tr><td>${i + 1}</td><td>${r.name}</td>` +
+      `<td class="${r.ok ? "ok" : "bad"}">${r.ok ? "OK" : "FAIL"}</td>` +
+      `<td>${r.detail.replace(/</g, "&lt;")}</td></tr>`).join("");
+  const bad = R.filter((r) => !r.ok).length;
+  const s = $("#summary");
+  s.className = R.length ? (bad ? "bad" : "ok") : "wait";
+  s.textContent = R.length ? `${R.length - bad}/${R.length} 通过${bad ? "，有失败" : ""}` : "运行中…";
+  // ⭐ 结果写到 title 上 ⇒ 命令行那侧只要读 title 就能判定，不必解析整页 DOM
+  document.title = bad ? `FAIL ${bad}/${R.length}` : `PASS ${R.length}`;
+}
+
+/** 等某个条件成立（轮询而不是固定 sleep —— 固定 sleep 会偶发失败） */
+async function until(fn, ms, what) {
+  const t0 = Date.now();
+  for (;;) {
+    let v;
+    try { v = fn(); } catch (e) { v = null; }
+    if (v) return v;
+    if (Date.now() - t0 > (ms || 30000)) throw new Error("超时等不到：" + what);
+    await sleep(120);
+  }
+}
+
+const q = new URLSearchParams(location.search);
+const tok = q.get("token") || "";
+const frame = $("#app");
+frame.src = "/?token=" + encodeURIComponent(tok) + "&tab=terminal";
+
+async function run() {
+  /* ⚠️⚠️ **不要缓存 contentDocument / contentWindow**！
+     iframe 还没导航时拿到的是 `about:blank`，而它的 readyState
+     **立刻就是 "complete"** ⇒ 等待条件瞬间通过 ⇒ 后面所有查询都打在
+     错误的文档上（本轮真踩了：一项都没查到，害我以为应用坏了）。
+     ⇒ 每次现取，并且等"应用 landmark 出现"而不是等 readyState。 */
+  const doc = () => frame.contentDocument;
+  const win = () => frame.contentWindow;
+  await until(() => {
+    const d = doc();
+    return d && d.readyState === "complete" && d.getElementById("tab-terminal");
+  }, 60000, "iframe 里应用就绪");
+  const app = win();
+  const H = () => app.__tw;                       // 只读句柄（const 不挂 window）
+  await until(() => H() && H().state, 60000, "终端首屏取数（含预热，约 3~5 秒）");
+  await sleep(400);
+
+  // ① 终端面板真的渲染了
+  say("终端面板已渲染", doc().querySelector("#tab-terminal .tpanel"), "有面板");
+  // ② 图表库加载 + 画布有实际尺寸
+  say("图表库已加载", app.LightweightCharts, "LightweightCharts=" +
+      (typeof app.LightweightCharts));
+  const cv = doc().querySelector("#t-lc canvas");
+  say("图表画布有实际尺寸", cv && cv.clientWidth > 200 && cv.clientHeight > 100,
+      cv ? cv.clientWidth + "x" + cv.clientHeight : "没有 canvas");
+  // ③ 读数条有内容（说明数据真的画出来了）
+  const rd = doc().querySelector("#t-read");
+  say("读数条有内容", rd && /开 .*高 .*低 .*收 /.test(rd.textContent), rd ? rd.textContent.slice(0, 60) : "空");
+  // ④ 盘口有档位
+  const domRows = doc().querySelectorAll("#t-dom tr[data-px]").length;
+  say("盘口有档位", domRows >= 4, domRows + " 档");
+  // ⑤ 无报错提示
+  const err = doc().querySelector("#t-err");
+  say("没有报错提示", err && !err.textContent.trim(), err ? err.textContent.trim() : "");
+
+  // ⑥ 点「单根」⇒ cursor 前进
+  // ⚠️ 断言要按**聚合的真实语义**写：周期是 4 时，**每 4 个 tick 才长出一根 K 线**
+  //    （不足一根会画一根"残缺 bar"）。我第一版写成"点一次 K 线就变多"
+  //    ⇒ 失败，而**错的是断言不是应用**。
+  const c0 = H().state.cursor;
+  doc().querySelector("#t-step").click();
+  await until(() => H().state.cursor > c0, 15000, "单根推进");
+  say("点「单根」cursor 前进", H().state.cursor > c0, c0 + " → " + H().state.cursor);
+
+  // 先攒够 tick 再谈 K 线根数（120 tick ⇒ agg=4 有 30 根，agg=16 有 8 根）
+  // ⭐ 用**进度滑块**推进，不用"点播放等 120ms" ——
+  //   播放的间隔是 650ms，120ms 内它根本不触发 ⇒ 一点没动（我第一版就这么写的，
+  //   然后困惑于"为什么 cursor 不动"）。滑块是真实用户入口，顺带把它也测了。
+  const sl = doc().querySelector("#t-seek");
+  sl.value = "120";
+  sl.dispatchEvent(new (win().Event)("input"));
+  await until(() => H().state.cursor >= 120, 40000, "拖进度条到 120");
+  say("拖进度条能跳到指定位置", H().state.cursor >= 120, "cursor=" + H().state.cursor);
+  const n4 = H().state.bars.length;
+  say("推进后 K 线已画出", n4 >= 10, "cursor=" + H().state.cursor + " 根数=" + n4);
+
+  // ⑦ 周期 4 → 16 ⇒ 根数约降到 1/4
+  // ⚠️ 等待期间**把观察到的值记下来**：只看"成功/失败"根本不知道它卡在哪
+  //    （本轮前两次失败都因此多花了一轮：一次是聚合语义、一次是播放间隔）。
+  const sel = doc().querySelector("#t-agg");
+  const watch = async (want, ms) => {
+    const seen = [];
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      const a = H().state.agg;
+      if (seen[seen.length - 1] !== a) seen.push(a);
+      if (a === want) return { ok: true, seen };
+      await sleep(150);
+    }
+    return { ok: false, seen };
+  };
+  const busyBefore = H().busy;
+  sel.value = "16";
+  const valAfter = sel.value;
+  sel.dispatchEvent(new (win().Event)("change"));
+  const aggImmediate = H().agg;                 // 处理器跑没跑，看这个
+  const w1 = await watch(16, 12000);
+  say("下拉设值 + 派发 change 后前端状态", aggImmediate === 16,
+      "sel.value=" + valAfter + " 处理器后 T.agg=" + aggImmediate +
+      "（派发前 busy=" + busyBefore + "）");
+  const errText = () => (doc().querySelector("#t-err") || {}).textContent || "";
+  say("周期切到 16", w1.ok, "看到 agg=" + w1.seen.join(",") +
+      " busy=" + H().busy + " 界面报错=[" + errText().trim() + "]");
+  if (w1.ok) {
+    await until(() => H().state.bars.length < n4, 15000, "16 根聚合后变少");
+    const n16 = H().state.bars.length;
+    say("周期 4→16 根数显著变少", n16 < n4 / 2, n4 + " → " + n16);
+  }
+  sel.value = "4"; sel.dispatchEvent(new (win().Event)("change"));
+  await watch(4, 8000);
+  await sleep(400);
+
+  // ⑧ 点盘口档位 ⇒ 价格输入框被填上
+  const row = doc().querySelector("#t-dom tr[data-px]");
+  const px = row && row.getAttribute("data-px");
+  row.click();
+  await until(() => doc().querySelector("#t-px").value !== "", 8000, "点档位填价");
+  say("点盘口档位填价", doc().querySelector("#t-px").value !== "",
+      "档位 " + px + " → #t-px=" + doc().querySelector("#t-px").value);
+
+  // ⑨ 快捷仓位 ⇒ 量 > 0
+  doc().querySelector("#t-qty").value = "";
+  doc().querySelectorAll("#tab-terminal .btn.sm").forEach((b) => {
+    if (b.textContent.trim() === "1/2") b.click();
+  });
+  const qv = parseFloat(doc().querySelector("#t-qty").value);
+  say("点「1/2」算出下单量", qv > 0, "量=" + qv);
+
+  // ⑩ 穿价买入 ⇒ 真成交（持仓 > 0 且成交明细有记录）
+  const ask = H().state.book.asks[0] && H().state.book.asks[0].p;
+  doc().querySelector("#t-px").value = String(ask);
+  doc().querySelector("#t-qty").value = "0.5";
+  doc().querySelector("#t-buy").click();
+  await until(() => (H().state.account.inventory || 0) > 0, 15000, "穿价买入成交");
+  say("穿价买入走撮合成交", (H().state.account.inventory || 0) > 0,
+      "持仓=" + H().state.account.inventory + " 成交笔数=" + (H().state.account.trades || []).length);
+
+  // ⑪ 成交明细在账户区可见
+  const tr = doc().querySelectorAll("#t-trades tr").length;
+  say("成交明细已显示", tr >= 2, tr + " 行");
+
+  // ⑫ 挂单 ⇒ 撤单
+  const bid = H().state.book.bids[0] && H().state.book.bids[0].p;
+  doc().querySelector("#t-px").value = String(bid);
+  doc().querySelector("#t-sell").click();
+  await until(() => (H().state.account.orders || []).length > 0, 15000, "限价卖单挂上");
+  const oid = H().state.account.orders[0].id;
+  const cancel = doc().querySelector("#t-orders a[data-cancel]");
+  say("挂单出现在列表", !!cancel, "挂单 " + oid);
+  if (cancel) {
+    cancel.click();
+    await until(() => !(H().state.account.orders || []).some((o) => o.id === oid), 15000, "撤单");
+  }
+  say("撤单后挂单消失",
+      !(H().state.account.orders || []).some((o) => o.id === oid), "撤 " + oid);
+
+  // ⑬ 播放 ⇒ 前进；暂停 ⇒ 停
+  const pc = H().state.cursor;
+  doc().querySelector("#t-play").click();
+  await until(() => H().state.cursor > pc + 2, 20000, "播放推进");
+  say("点「播放」自动推进", H().state.cursor > pc + 2, pc + " → " + H().state.cursor);
+  doc().querySelectorAll("#tab-terminal .btn.sm").forEach((b) => {
+    if (b.textContent.trim() === "⏸") b.click();
+  });
+  await sleep(900);
+  const p2 = H().state.cursor;
+  await sleep(900);
+  say("点「暂停」真的停住", H().state.cursor === p2, p2 + " → " + H().state.cursor);
+
+  // ⑭ 切走标签页再切回 ⇒ 视图状态不被重置（数据签名不变、缩放范围不变）
+  const sig0 = H().chartSig;
+  const lr0 = H().visibleRange;
+  doc().querySelector('#tabs button[data-tab="overview"]').click();
+  await sleep(250);
+  doc().querySelector('#tabs button[data-tab="terminal"]').click();
+  await until(() => H().hasChart, 8000, "切回终端");
+  await sleep(400);
+  const lr1 = H().visibleRange;
+  say("切走再切回：数据未被重置", H().chartSig === sig0, "sig " + sig0 + " → " + H().chartSig);
+  say("切走再切回：缩放范围保住",
+      lr0 && lr1 && Math.abs(lr0.from - lr1.from) < 1.5,
+      lr0 && lr1 ? lr0.from.toFixed(1) + " → " + lr1.from.toFixed(1) : "?");
+
+  // ⑮ 图上有成交标记（"这像交易软件"的关键一笔）
+  say("成交标记已上图", (H().state.account.trades || []).length > 0,
+      "成交 " + (H().state.account.trades || []).length + " 笔（渲染在图上）");
+}
+
+run().then(() => { if (R.length) paint(); }).catch((e) => {
+  say("验收脚本自身出错", false, (e && e.message) || e);
+});
+</script>
+</body>
+</html>
