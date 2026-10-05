@@ -871,5 +871,57 @@ class TestTerminalApi(unittest.TestCase):
                     fn(self._ctx("POST", "/api/terminal/x", body))
 
 
+class TestVendoredChartLib(unittest.TestCase):
+    """交易终端用的第三方图表库（Lightweight Charts，Apache 2.0）。
+
+    ⭐ 为什么要有这个测试：库是 **vendor 进来的本地文件**，不是 CDN。
+    好处是离线可用、零构建；⭐ 风险是**"忘了提交它"** ——
+    开发机上有（页面正常），打包后没进包（终端空白），
+    而**两边都不会报错**，只是图不出来。
+    ⇒ 把"文件在不在、许可声明在不在、页面引用的路径对不对"钉死。
+    """
+
+    #: 仓库根（从本文件位置推导，不引外部 helper —— 那个模块不存在）
+    REPO = Path(__file__).resolve().parent.parent
+    LIB = "gui/static/vendor/lightweight-charts.standalone.production.js"
+
+    def test_库文件在仓库里(self) -> None:
+        pass  # REPO 见本类属性
+
+        p = self.REPO / self.LIB
+        self.assertTrue(p.is_file(), f"{self.LIB} 不在仓库里 —— 打包后终端会是空白")
+        self.assertGreater(p.stat().st_size, 50_000, "文件太小，多半是没下全")
+
+    def test_许可证声明在文件头部(self) -> None:
+        """Apache 2.0 要求保留许可声明； vendored 文件必须原样带着。"""
+        pass  # REPO 见本类属性
+
+        head = (self.REPO / self.LIB).read_text(encoding="utf-8", errors="replace")[:400]
+        self.assertIn("Apache License", head)
+        self.assertIn("TradingView", head)
+
+    def test_页面用_static前缀引用它(self) -> None:
+        """⭐ 静态路由**只认 `/static/` 前缀**（`_dispatch` 里写死的）。
+        写成 `vendor/…` ⇒ 404 ⇒ 图表静默不加载（页面仍"正常"）。"""
+        pass  # REPO 见本类属性
+
+        html = (self.REPO / "gui" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('/static/vendor/lightweight-charts', html,
+                      '页面没引 vendor 库 —— 终端会退化成「图表库没加载」')
+        code_only = re.sub(r"/\*.*?\*/", "", html, flags=re.S)   # 剥掉注释：说明文字里也会提到标签字面量
+        self.assertTrue('<script src="vendor/' not in code_only,
+                        '实际 script 标签必须带 /static/ 前缀（注释里出现不算）')
+
+    def test_库在主脚本之前加载(self) -> None:
+        pass  # REPO 见本类属性
+
+        html = (self.REPO / "gui" / "static" / "index.html").read_text(encoding="utf-8")
+        i_lib = html.find("/static/vendor/lightweight-charts")
+        i_use = html.find("use strict")
+        self.assertGreater(i_lib, 0)
+        self.assertGreater(i_use, 0)
+        self.assertLess(i_lib, i_use, "库必须在主脚本**之前**加载")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main(verbosity=2)

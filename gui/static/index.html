@@ -391,6 +391,7 @@ code{background:var(--panel3);padding:1px 6px;border-radius:4px;font-size:12px;c
   </main>
 </div>
 
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <script>
 "use strict";
 /* =====================================================================
@@ -2052,18 +2053,30 @@ function tView() {
   const start = Math.max(0, end - vis);
   return { b, n, start, end, vis };
 }
-/* ---------------------------------------------------------- 坐标与价格格式 */
+/* ---------------------------------------------------------- 图表内核
+   ⚠️ 2026-10-05 换掉了手写 canvas，换成 **Lightweight Charts™**
+   （TradingView 开源那一档，Apache 2.0，**本地 vendor**：`vendor/` 下一个文件）。
+
+   为什么换：本项目"不引第三方库"的自我约束，在**图表内核**这件事上代价太大 ——
+   平移/缩放/十字光标/tooltip/坐标轴自适应/多周期/标记点，全是**已被解决的问题**，
+   手搓一遍既慢又不如现成的（用户反馈"太粗糙"时，我诊断出的根因之一就是这个）。
+   ⇒ 现在把工程量投到**真正属于本项目**的地方：回放、盘口、纸上交易、成交标记。
+
+   ⚠️ 破掉的约束只有一个：**引了第三方代码**。
+   仍然保持的两条（对本项目的性质更重要）：
+     · **零构建步骤** —— 一个本地 script 标签，不是打包器；
+     · **完全离线** —— 本地文件，**不是 CDN**，不联网。
+*/
+const LC_BASE = 1700000000;          // 合成时间轴的基准（只用来排序，见下）
+let TC = null;                        // 图表实例
+
+/* ⚠️ 这三个是被**别的区块**引用的（盘口阶梯用前两个、均线用第三个）——
+   换图表内核时做区块替换，把它们一起删掉了 ⇒ 报 "xxx is not defined"。
+   ⭐ 教训：做区块替换时，要先 grep 一遍**区块外**有没有人引用被删的符号。 */
+
+/** 价格标签：⚠️ 不能用全局 tickLabel（它自动换算 k/M，6 万量级的价格会被
+ *  压成 "59k"，**精度全丢**）。 */
 function tPriceLabel(v, step) {
-  /* ⚠️ **不能**用全局的 tickLabel：它会自动换算成 k/M
-     （59,667 → "59k"），那是给"百万级数量"设计的。
-     加密货币价格在 6 万量级，压缩成 k 就**把精度丢了** ——
-     盘口和图表的价位差 1 块钱都看不出来。
-     ⭐ 本行的教训（同一类错误我连踩三次）：
-       ① 块注释的结尾我写成了 Python docstring 的三个双引号；
-       ② 修的时候又把「块注释的结束符」本身写进了注释正文里 ⇒ 提前闭合；
-       ③ 写检查脚本时在 docstring 里抄了那三个双引号 ⇒ 自己的 docstring 提前闭合。
-     教训：**描述某个错误写法时，不要把那个写法原样抄进来。** */
-  const a = Math.abs(v);
   const d = step < 0.01 ? 4 : step < 0.1 ? 3 : step < 1 ? 2 : step < 10 ? 1 : 0;
   return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
@@ -2074,7 +2087,6 @@ function tQtyLabel(v) {
   if (a >= 10) return v.toFixed(1);
   return v.toFixed(2);
 }
-
 /** n 周期简单均线；不足 n 根的位置为 null（不画）。 */
 function tMA(b, n) {
   const out = new Array(b.length).fill(null);
@@ -2087,172 +2099,211 @@ function tMA(b, n) {
   return out;
 }
 
-function tGeom(cv, h) {
-  const W = cv.clientWidth || 760;
-  const dpr = window.devicePixelRatio || 1;
-  cv.width = Math.round(W * dpr);
-  cv.height = Math.round(h * dpr);
-  cv.style.height = h + "px";
-  const g = cv.getContext("2d");
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, W, h);
-  return { g, W, H: h };
-}
-function tNoData(g, W, H, msg) {
-  g.fillStyle = css("--muted");
-  g.font = "13px sans-serif";
-  g.textAlign = "center";
-  g.fillText(msg, W / 2, H / 2);
-}
+function tHasLib() { return typeof window.LightweightCharts !== "undefined"; }
 
-/* ---------------------------------------------------------- 主图：K 线 */
-function tDrawPrice() {
-  const cv = document.getElementById("t-price");
-  if (!cv) return;
-  const { g, W, H } = tGeom(cv, 340);
-  const { b, start, end } = tView();
-  const pad = { l: 6, r: 70, t: 8, b: 16 };
-  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
-  if (!b.length || end <= start) { tNoData(g, W, H, "还没有数据 —— 点「单根」或「播放」"); return; }
-
-  let lo = Infinity, hi = -Infinity;
-  for (let i = start; i < end; i++) { if (b[i].l < lo) lo = b[i].l; if (b[i].h > hi) hi = b[i].h; }
-  const mgn = (hi - lo) * 0.08 || Math.max(1, hi * 0.0002);
-  lo -= mgn; hi += mgn;
-  const X = (i) => pad.l + (i - start + 0.5) * (pw / (end - start));
-  const Y = (p) => pad.t + ph * (1 - (p - lo) / (hi - lo));
-
-  // 网格 + 价格轴（复用全局的 niceTicks / tickLabel）
-  const ticks = niceTicks(lo, hi, 6);
-  const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : 1;
-  g.strokeStyle = css("--grid"); g.lineWidth = 1;
-  g.fillStyle = css("--muted"); g.font = "11px ui-monospace,monospace";
-  g.textAlign = "left"; g.textBaseline = "middle";
-  for (const v of ticks) {
-    const y = Math.round(Y(v)) + 0.5;
-    if (y < pad.t || y > pad.t + ph) continue;
-    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
-    g.fillText(tPriceLabel(v, step), pad.l + pw + 5, y);
-  }
-
-  // K 线：影线 + 实体（红涨绿跌）
-  const slot = pw / (end - start);
-  const cw = Math.max(1, Math.min(14, slot * 0.66));
-  for (let i = start; i < end; i++) {
-    const d = b[i], up = d.c >= d.o;
-    g.strokeStyle = g.fillStyle = up ? "#e8735a" : "#4ec9a0";
-    g.beginPath(); g.moveTo(X(i), Y(d.h)); g.lineTo(X(i), Y(d.l)); g.stroke();
-    const y1 = Y(Math.max(d.o, d.c)), y2 = Y(Math.min(d.o, d.c));
-    g.fillRect(X(i) - cw / 2, y1, cw, Math.max(1, y2 - y1));
-  }
-
-  // 最新价横线 + 标签（TradingView 的习惯）
-  const last = b[b.length - 1];
-  if (last) {
-    const y = Y(last.c);
-    if (y > pad.t && y < pad.t + ph) {
-      g.strokeStyle = "#5aa9e6"; g.setLineDash([3, 3]);
-      g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
-      g.setLineDash([]);
-      g.fillStyle = "#5aa9e6"; g.fillRect(pad.l + pw + 1, y - 8, 66, 16);
-      g.fillStyle = "#0d1017"; g.textAlign = "center";
-      g.fillText(tPriceLabel(last.c, step), pad.l + pw + 34, y);
-      g.textAlign = "left";
-    }
-  }
-
-  // 均线：MA7（快）/ MA25（慢）—— 看盘第一眼该有的"有没有趋势"
-  // ⚠️ 画在 K 线**之上**且半透明，否则会盖住实体
-  const ma7 = tMA(b, 7), ma25 = tMA(b, 25);
-  const line = (arr, color) => {
-    g.strokeStyle = color; g.lineWidth = 1.3; g.globalAlpha = 0.9;
-    g.beginPath();
-    let started = false;
-    for (let i = start; i < end; i++) {
-      if (arr[i] == null) { started = false; continue; }
-      const x = X(i), y = Y(arr[i]);
-      if (!started) { g.moveTo(x, y); started = true; } else g.lineTo(x, y);
-    }
-    g.stroke();
-    g.globalAlpha = 1;
+function tInitChart() {
+  if (TC || !tHasLib()) return;
+  const host = document.getElementById("t-lc");
+  const volHost = document.getElementById("t-lc-vol");
+  if (!host || !volHost) return;
+  const base = {
+    layout: {
+      background: { type: "solid", color: "#1c1f26" },
+      textColor: "#aab4c4",
+      fontSize: 11,
+    },
+    // ⚠️ x 轴显示 **tick 编号**而不是日期。
+    //    本项目的「1 tick ≈ 1 小时」只是**刻度**，画成真实日期会诱导
+    //    读者去做延迟/队列位置的推断（交付报告的「已知缺陷」里明写了不能）。
+    timeScale: {
+      timeVisible: false,
+      secondsVisible: false,
+      timeFormatter: (t) => "t" + (t - LC_BASE),
+      rightOffset: 4,
+      barSpacing: 7,
+    },
+    rightPriceScale: { borderColor: "#353b46", scaleMargins: { top: 0.08, bottom: 0.08 } },
+    crosshair: {
+      mode: 0,                                  // Normal（价格+时间两条线）
+      vertLine: { color: "#7d8798", width: 1, style: 3, labelBackgroundColor: "#2f6fed" },
+      horzLine: { color: "#7d8798", width: 1, style: 3, labelBackgroundColor: "#2f6fed" },
+    },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true },
+    localization: { locale: "en-US" },
   };
-  line(ma25, "#b48ead");
-  line(ma7, "#e0a458");
-  // ⚠️ 这里必须是大写的 T（全局状态对象）。写成小写 t 是**未声明变量**，
-  //    严格模式下直接抛 ReferenceError —— 而且它发生在 K 线画完之后，
-  //    症状是"图有、读数条/盘口/账户全空"，根本看不出是这里挂了。
-  T.mas = { ma7: ma7, ma25: ma25 };
+  const chart = window.LightweightCharts.createChart(host, base);
+  const volChart = window.LightweightCharts.createChart(volHost, {
+    layout: base.layout,
+    timeScale: { ...base.timeScale, visible: false },   // 与主图共享逻辑范围
+    rightPriceScale: { borderColor: "#353b46", scaleMargins: { top: 0.1, bottom: 0 } },
+    crosshair: base.crosshair,
+    localization: base.localization,
+  });
 
-  // 十字光标
-  if (T.hover != null && T.hover >= start && T.hover < end) {
-    const x = X(T.hover), d = b[T.hover];
-    g.strokeStyle = css("--fg2"); g.setLineDash([2, 3]);
-    g.beginPath(); g.moveTo(x, pad.t); g.lineTo(x, pad.t + ph); g.stroke();
-    const y = Y(d.c);
-    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(pad.l + pw, y); g.stroke();
-    g.setLineDash([]);
-    g.fillStyle = "#5aa9e6"; g.fillRect(pad.l + pw + 1, y - 8, 66, 16);
-    g.fillStyle = "#0d1017"; g.textAlign = "center";
-    g.fillText(tPriceLabel(d.c, step), pad.l + pw + 34, y);
-  }
-  tAxis(g, W, H, b, start, end, slot, pad, pw);
+  const up = "#e8735a", down = "#4ec9a0";
+  const candles = chart.addSeries(window.LightweightCharts.CandlestickSeries, {
+    upColor: up, downColor: down, borderUpColor: up, borderDownColor: down,
+    wickUpColor: up, wickDownColor: down, priceLineVisible: true,
+    priceLineColor: "#5aa9e6", priceLineStyle: 2,
+  });
+  const ma7 = chart.addSeries(window.LightweightCharts.LineSeries, {
+    color: "#e0a458", lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  const ma25 = chart.addSeries(window.LightweightCharts.LineSeries, {
+    color: "#b48ead", lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  const vol = volChart.addSeries(window.LightweightCharts.HistogramSeries, {
+    priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
+  });
+
+  // 两个图表的时间轴联动：主图动，量图跟着动
+  chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+    if (r && volChart.timeScale().setVisibleLogicalRange) {
+      try { volChart.timeScale().setVisibleLogicalRange(r); } catch (e) { /* 边界忽略 */ }
+    }
+  });
+  volChart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+    if (r && chart.timeScale().setVisibleLogicalRange) {
+      try { chart.timeScale().setVisibleLogicalRange(r); } catch (e) { /* 边界忽略 */ }
+    }
+  });
+
+  TC = { chart: chart, volChart: volChart, candles: candles,
+         ma7: ma7, ma25: ma25, vol: vol, sig: "", posLine: null };
 }
 
-/* ---------------------------------------------------------- 副图：成交量 */
-function tDrawVol() {
-  const cv = document.getElementById("t-vol");
-  if (!cv) return;
-  const { g, W, H } = tGeom(cv, 96);
-  const { b, start, end } = tView();
-  const pad = { l: 6, r: 70, t: 6, b: 12 };
-  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
-  if (!b.length || end <= start) { tNoData(g, W, H, ""); return; }
-  let vmax = 0;
-  for (let i = start; i < end; i++) vmax = Math.max(vmax, b[i].v);
-  vmax = vmax || 1;
-  const slot = pw / (end - start);
-  const cw = Math.max(1, Math.min(14, slot * 0.66));
-  for (let i = start; i < end; i++) {
-    const d = b[i], up = d.c >= d.o, hgt = ph * (d.v / vmax);
-    g.fillStyle = up ? "rgba(232,115,90,.75)" : "rgba(78,201,160,.75)";
-    g.fillRect(pad.l + (i - start) * slot + (slot - cw) / 2, pad.t + ph - hgt, cw, Math.max(1, hgt));
-  }
-  g.strokeStyle = css("--grid");
-  g.beginPath(); g.moveTo(pad.l, pad.t + ph + 0.5); g.lineTo(pad.l + pw, pad.t + ph + 0.5); g.stroke();
-  g.fillStyle = css("--muted"); g.font = "10px ui-monospace,monospace";
-  g.textAlign = "left";
-  g.fillText("量 " + vmax.toFixed(1), pad.l + pw + 5, pad.t + 8);
+/** 库里没有"可见根数"这个概念 ⇒ 用逻辑范围的条数当"可见根数"。 */
+function tVisCount() {
+  if (!TC) return T.vis;
+  const r = TC.chart.timeScale().getVisibleLogicalRange();
+  return r ? Math.max(20, Math.round(r.to - r.from)) : T.vis;
 }
 
-/* ---------------------------------------------------------- 时间轴 */
-function tAxis(g, W, H, b, start, end, slot, pad, pw) {
-  g.fillStyle = css("--muted"); g.font = "10px ui-monospace,monospace";
-  g.textAlign = "center"; g.textBaseline = "top";
-  const every = Math.max(1, Math.round((end - start) / 8));
-  for (let i = start; i < end; i += every) {
-    const x = pad.l + (i - start + 0.5) * slot;
-    if (x > pad.l + pw - 12) break;
-    g.fillText("t" + b[i].t, x, H - 12);
+function tSyncChart() {
+  if (!T.st) return;
+  tInitChart();
+  if (!TC) {                                 // ⚠️ 没库也要让人看见"为什么空着"
+    const w = document.getElementById("t-lc-warn");
+    if (w) w.style.display = "block";
+    return;
   }
-  g.textBaseline = "alphabetic";
+  const b = T_BARS();
+  if (!b.length) {
+    [TC.candles, TC.ma7, TC.ma25, TC.vol].forEach((s) => s.setData([]));
+    return;
+  }
+  // 换种子/重置时数据全变 ⇒ 用"最后一根 + 条数"当签名，避免每帧重设
+  const last = b[b.length - 1];
+  const sig = b.length + ":" + last.t + ":" + last.c;
+  if (sig === TC.sig) { tSyncMarkers(); return; }
+  TC.sig = sig;
+
+  const base = LC_BASE;
+  const candles = [], v7 = [], v25 = [], vols = [];
+  const m7 = tMA(b, 7), m25 = tMA(b, 25);
+  for (let i = 0; i < b.length; i++) {    const d = b[i], tm = base + d.t * 60;   // 合成时间：只用排序，不给日期
+    candles.push({ time: tm, open: d.o, high: d.h, low: d.l, close: d.c });
+    vols.push({ time: tm, value: d.v, color: d.c >= d.o ? "rgba(232,115,90,.6)" : "rgba(78,201,160,.6)" });
+    if (m7[i] != null) v7.push({ time: tm, value: m7[i] });
+    if (m25[i] != null) v25.push({ time: tm, value: m25[i] });
+  }
+  // ⚠️ setData 会**重置可见范围** ⇒ 先存后恢复，
+  //    否则"回放中动一下鼠标，视图就跳回全览"。
+  const keep = TC.chart.timeScale().getVisibleLogicalRange();
+  TC.candles.setData(candles);
+  TC.ma7.setData(v7);
+  TC.ma25.setData(v25);
+  TC.vol.setData(vols);
+  if (keep) {
+    try {
+      TC.chart.timeScale().setVisibleLogicalRange(keep);
+      TC.volChart.timeScale().setVisibleLogicalRange(keep);
+    } catch (e) { /* 范围不合法就算 */ }
+  }
+  T.mas = { ma7: m7, ma25: m25 };     // 读数条要用（tReadout 从这里取）
+  tSyncMarkers();
 }
 
-/* ---------------------------------------------------------- 读数条 */
+/** 把**纸上账户的成交**画在图上 —— 这是"这像交易软件"最关键的一笔。 */
+function tSyncMarkers() {
+  if (!TC || !T.st) return;
+  const base = LC_BASE;
+  const acc = T.st.account || {};
+  const marks = [];
+  for (const t of (acc.trades || [])) {
+    marks.push({
+      time: base + t.tick * 60,
+      position: t.side === "buy" ? "belowBar" : "aboveBar",
+      color: t.side === "buy" ? "#e8735a" : "#4ec9a0",
+      shape: t.side === "buy" ? "arrowUp" : "arrowDown",
+      text: (t.side === "buy" ? "买 " : "卖 ") + t.qty.toFixed(3) + " @ " + t.price.toFixed(0),
+    });
+  }
+  // 未成交的挂单：在价格上画一条横线（价 = 挂单价，标题 = 方向与量）
+  for (const o of (acc.orders || [])) {
+    if (o.price == null) continue;
+    marks.push({
+      time: base + (T.st.cursor + 40) * 60,
+      position: o.side === "buy" ? "belowBar" : "aboveBar",
+      color: "#7d8798", shape: "circle",
+      text: "挂" + o.qty.toFixed(3),
+    });
+  }
+  // ⚠️⚠️ **v5 改了标记 API**：不再是 `series.setMarkers()`，而是
+  //   `createSeriesMarkers(series, data)` 返回一个独立 primitive，再对它 setMarkers。
+  //   （我按 v4 的写法调 series.setMarkers ⇒ "is not a function"，
+  //     而且它挂在 tPaint 的主链上 ⇒ **整个右半边全废**。）
+  //   ⇒ 两种 API 都试，且**整段包 try/catch**：标记是锦上添花，
+  //     它挂掉不许连累 K 线本身。
+  try {
+    if (!TC.markers && window.LightweightCharts.createSeriesMarkers) {
+      TC.markers = window.LightweightCharts.createSeriesMarkers(TC.candles, marks);
+    }
+    if (TC.markers && typeof TC.markers.setMarkers === "function") TC.markers.setMarkers(marks);
+    else if (typeof TC.candles.setMarkers === "function") TC.candles.setMarkers(marks);
+  } catch (e) {
+    const w = document.getElementById("t-lc-warn");
+    if (w) { w.style.display = "block"; w.textContent = "成交标记没画上：" + ((e && e.message) || e); }
+  }
+
+  // 持仓成本线：有仓位才画
+  const inv = acc.inventory || 0;
+  if (TC.posLine) { TC.candles.removePriceLine(TC.posLine); TC.posLine = null; }
+  if (Math.abs(inv) > 1e-9) {
+    const ts = (acc.trades || []);
+    let cost = 0, q = 0;
+    for (const t of ts) {
+      const s = t.side === "buy" ? 1 : -1;
+      cost += s * t.qty * t.price; q += s * t.qty;
+    }
+    const px = q !== 0 ? cost / q : null;
+    if (px) {
+      TC.posLine = TC.candles.createPriceLine({
+        price: px, color: "#7aa2f7", lineWidth: 1, lineStyle: 2,
+        axisLabelVisible: true, title: "持仓 " + (q > 0 ? "+" : "") + q.toFixed(3),
+      });
+    }
+  }
+}
+
+/** 十字光标的读数（库的 tooltip 不显示 OHLCV 全部字段 ⇒ 自己补一行）。 */
 function tReadout() {
   const box = document.getElementById("t-read");
-  if (!box) return;
+  if (!box || !TC) return;
   const b = T_BARS();
-  const i = T.hover != null && T.hover >= 0 && T.hover < b.length ? T.hover : b.length - 1;
-  if (i < 0) { box.textContent = ""; return; }
+  if (!b.length) { box.textContent = ""; return; }
+  let i = b.length - 1;
+  if (T.hover != null && T.hover >= 0 && T.hover < b.length) i = T.hover;
   const d = b[i];
-  const up = d.c >= d.o;
-  const cls = up ? "up" : "dn";
   const mas = T.mas || {};
   const f = (x) => (x == null ? "—" : x.toFixed(1));
+  const n = (v) => v.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   box.innerHTML =
-    `<span class="${cls}">开 ${d.o.toFixed(1)}　高 ${d.h.toFixed(1)}　低 ${d.l.toFixed(1)}　` +
-    `收 ${d.c.toFixed(1)}</span>　量 ${d.v.toFixed(2)}　笔 ${d.n.toFixed(0)}　` +
-    `买盘 ${d.d.toFixed(1)}　` +
+    `<span class="${d.c >= d.o ? "up" : "dn"}">开 ${n(d.o)}　高 ${n(d.h)}　低 ${n(d.l)}　收 ${n(d.c)}</span>` +
+    `　量 ${d.v.toFixed(2)}　笔 ${d.n.toFixed(0)}　买盘 ${d.d.toFixed(1)}　` +
     `<span style="color:#e0a458">MA7 ${f(mas.ma7 && mas.ma7[i])}</span>　` +
     `<span style="color:#b48ead">MA25 ${f(mas.ma25 && mas.ma25[i])}</span>　` +
     `<span style="color:var(--muted)">tick ${d.t}` +
@@ -2352,8 +2403,7 @@ function tPaint() {
      截图只看到"空的盘口"，完全看不出是前面挂了）。
      ⇒ 失败就把原因显示在工具条上，而不是留一片空白。 */
   try {
-    tDrawPrice();
-    tDrawVol();
+    tSyncChart();
     tReadout();
     tDom();
     tAcct();
@@ -2394,36 +2444,23 @@ function tStop() {
 
 /* ---------------------------------------------------------- 交互绑定 */
 function tBind() {
-  const cv = document.getElementById("t-price");
-  if (!cv) return;
-  const idxAt = (ev) => {
-    const { start, end } = tView();
-    const r = cv.getBoundingClientRect();
-    const pad = 6, pw = r.width - pad - 70;
-    const i = start + Math.floor(((ev.clientX - r.left - pad) / pw) * (end - start));
-    return (i >= start && i < end) ? i : null;
-  };
-  cv.onmousemove = (ev) => {
-    if (cv._drag) {
-      const dx = ev.clientX - cv._dragX;
-      const { vis, end } = tView();
-      const slot = (cv.clientWidth - 76) / vis;
-      T.off = Math.max(0, Math.min(T_BARS().length - vis, T._off0 - Math.round(dx / slot)));
-      tPaint();
-      return;
-    }
-    T.hover = idxAt(ev);
-    tPaint();
-  };
-  cv.onmouseleave = () => { T.hover = null; tPaint(); };
-  cv.onmousedown = (ev) => { cv._drag = true; cv._dragX = ev.clientX; T._off0 = T.off; };
-  window.addEventListener("mouseup", () => { if (cv) cv._drag = false; });
-  cv.onwheel = (ev) => {
-    ev.preventDefault();
-    T.vis = Math.max(20, Math.min(2000, Math.round(T.vis * (ev.deltaY > 0 ? 1.15 : 0.87))));
-    tPaint();
-  };
-  cv.ondblclick = () => { T.vis = 160; T.off = 0; tPaint(); };
+  /* ⚠️ 换库之后**删掉了手写的 wheel/drag/dblclick**：
+     平移/缩放/双击这些是图表内核该干的事，自己再实现一遍就是"两处实现"，
+     迟早分叉（而且第一版的手写版就分叉出了 `t` / `T.mas` 那种错）。
+     这里只做内核**不管**的两件事：把光标位置告诉读数条、给一个复位入口。 */
+  const host = document.getElementById("t-lc");
+  if (!host) return;
+  tInitChart();
+  if (TC) {
+    TC.chart.subscribeCrosshairMove((p) => {
+      const b = T_BARS();
+      if (!p || !p.time || !b.length) { T.hover = null; tReadout(); return; }
+      const i = p.time - LC_BASE;
+      T.hover = Math.max(0, Math.min(b.length - 1, Math.round(i / 60)));
+      tReadout();
+    });
+    host.ondblclick = () => { TC.chart.timeScale().fitContent(); tReadout(); };
+  }
 }
 
 /* ---------------------------------------------------------- 铺 DOM */
@@ -2456,8 +2493,8 @@ function renderTerminal() {
       </div>
       <div class="tgrid">
         <div>
-          <div class="tpanel"><canvas class="tchart" id="t-price"></canvas></div>
-          <div class="tpanel" style="margin-top:8px"><canvas class="tchart" id="t-vol"></canvas></div>
+          <div class="tpanel"><div id="t-lc" style="height:340px"></div><div id="t-lc-warn" style="display:none;color:var(--warn);font-size:12px;padding:6px">图表库没加载（vendor/lightweight-charts…）。图表不可用，其余功能仍可用。</div></div>
+          <div class="tpanel" style="margin-top:6px"><div id="t-lc-vol" style="height:92px"></div></div>
           <div class="tread" id="t-read"></div>
           <div class="tpanel" style="margin-top:8px">
             <div class="tbar" style="margin:0 0 6px">
